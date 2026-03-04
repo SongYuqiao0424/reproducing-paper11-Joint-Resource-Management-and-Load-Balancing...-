@@ -1,0 +1,112 @@
+﻿import os
+import numpy as np
+import time
+
+from config import Config
+from env.satellite_network import SatelliteNetworkEnv
+
+def bcd_optimization_placeholder(env, config, h_matrix, g_matrix):
+    '''
+    这是一个用于替代完整 BCD(MPMM + SCA + 二次规划) 求解的启发式/随机占位函数。
+    在 algorithms/solvers.py 尚未实现和引入之前，用来验证系统闭环运转。
+    它将返回形状符合预期的 F, P, B 张量。
+    '''
+    S = config.NUM_SATELLITES
+    K = config.NUM_CELLS
+    L = config.NUM_FREQUENCY_SEGMENTS
+    
+    # 随机生成一个合理的跳波束策略图 F (S x K) - 每颗卫星随机选 Nb 个波束服务
+    F_pattern = np.zeros((S, K))
+    for s in range(S):
+        chosen_cells = np.random.choice(K, config.NUM_BEAMS_PER_SAT, replace=False)
+        F_pattern[s, chosen_cells] = 1.0
+        
+    # 随机生成符合功率上限的功率分配矩阵 P (L x S x K)
+    P_matrix = np.random.uniform(0.1, 10.0, (L, S, K))
+    # 仅向 F 限定的波束注入功率
+    for s in range(S):
+        for k in range(K):
+            if F_pattern[s, k] == 0.0:
+                P_matrix[:, s, k] = 0.0
+            else:
+                # 简单归一化，保证满足 MAX_POWER_PER_SAT 约束
+                p_sum = np.sum(P_matrix[:, s, k])
+                if p_sum > config.MAX_POWER_PER_SAT / config.NUM_BEAMS_PER_SAT:
+                    scaling = (config.MAX_POWER_PER_SAT / config.NUM_BEAMS_PER_SAT) / p_sum
+                    P_matrix[:, s, k] *= scaling
+                    
+    # 随机生成少量的负载转移张量 B (S x S x K)
+    B_tensor = np.zeros((S, S, K))
+    for s in range(S):
+        for k in range(K):
+            if F_pattern[s, k] == 1.0:  # 卫星s服务小区k
+                # 选择也服务该小区的其他卫星作为接收方
+                available_receivers = [x for x in range(S) if x != s and F_pattern[x, k] == 1.0]
+                
+                if available_receivers:  # 如果存在可用的接收卫星
+                    r = np.random.choice(available_receivers)
+                    B_tensor[s, r, k] = np.random.uniform(0.0, 5.0)  # 转移量随机在 0-5 包之间
+                else:
+                    # 没有其他卫星服务该小区，无法进行负载转移
+                    B_tensor[s, :, k] = 0.0  # 保持为零
+    
+    return F_pattern, P_matrix, B_tensor
+
+def main():
+    print('===========================================================')
+    print('  Starting Multi-Satellite Beam Hopping Simulation (Energy Min) ')
+    print('===========================================================')
+    
+    # 1. 载入配置与环境
+    config = Config()
+    env = SatelliteNetworkEnv(config)
+    
+    print(f'[INFO] Number of Satellites: {config.NUM_SATELLITES}')
+    print(f'[INFO] Number of Beams per Sat: {config.NUM_BEAMS_PER_SAT}')
+    print(f'[INFO] Number of Ground Cells: {config.NUM_CELLS}')
+    print(f'[INFO] Max Power limitation: {config.MAX_POWER_PER_SAT} W')
+    print(f'[INFO] Simulation Slots: {config.MAX_TIME_SLOTS}')
+    print('-----------------------------------------------------------')
+
+    start_time = time.time()
+    
+    # 记录聚合观测值
+    record_avg_q = []
+    record_energy = []
+    record_throughput = []
+    
+    # 2. 模拟时隙循环开始
+    for n in range(config.MAX_TIME_SLOTS):
+        # (a) 更新与获取信道状态 (当前时隙的 H 与 G)
+        h_matrix, g_matrix = env.channel_model.generate_random_channel_matrices()
+        
+        # (b) 进行联合求解策略计算：BCD 优化获取 F[n], P[n], B[n] 
+        # TODO: 替换为 algorithms/solvers.py 中真实的 BCD 函数
+        F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        
+        # (c) 执行动作并在环境中步进，产生延时与能耗表现
+        step_metrics = env.step(F_opt, P_opt, B_opt)
+        
+        record_avg_q.append(step_metrics['avg_queue'])
+        record_energy.append(step_metrics['energy_consumption'])
+        record_throughput.append(step_metrics['throughput'])
+        
+        # 屏幕显示进度
+        if (n + 1) % 100 == 0:
+            avg_q = step_metrics['avg_queue']
+            erg = step_metrics['energy_consumption']
+            tpt = step_metrics['throughput']
+            print(f'[Slot {n+1:4d} / {config.MAX_TIME_SLOTS}] Avg Queue: {avg_q:.2f} pkts | EnergyTx: {erg:.4f} J | Tput: {tpt:.2f}')
+
+    # 3. 运行结束，输出总体仿真指标
+    elapsed_time = time.time() - start_time
+    print('-----------------------------------------------------------')
+    print(f'Simulation Finished in {elapsed_time:.2f} seconds.')
+    print(f'[Result] Overall Avg Queue Length: {np.mean(record_avg_q):.2f} pkts')
+    print(f'[Result] Overall Avg Tx Energy per slot: {np.mean(record_energy):.4f} J/slot')
+    print(f'[Result] Overall Sum Throughput: {np.sum(record_throughput):.2f} pkts')
+    print('===========================================================')
+    
+if __name__ == '__main__':
+    main()
+
