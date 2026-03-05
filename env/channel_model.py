@@ -110,7 +110,13 @@ class ChannelModel:
         for s in range(S):
             for k in range(K):
                 for j in range(K):
-                    G_matrix[s, k, j] = base_g * np.random.uniform(0.05, 0.5)
+                    if k == j:
+                        # 目标波束指向 j 与 GSO 所在小区 k 一致，GSO受到主瓣干扰，增益较大
+                        G_matrix[s, k, j] = base_g * np.random.uniform(0.8, 1.2)
+                    else:
+                        # 指向其他小区 j 时，对 k 处的 GSO 造成旁瓣干扰，增益较小
+                        dist_factor = np.random.uniform(0.01, 0.1)
+                        G_matrix[s, k, j] = base_g * dist_factor
                     
         return H, G_matrix
 
