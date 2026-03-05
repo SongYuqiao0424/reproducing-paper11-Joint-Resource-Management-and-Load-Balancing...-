@@ -6,7 +6,7 @@ class ChannelModel:
     def __init__(self, config):
         self.config = config
         # 从 dBm/Hz 转换为常数瓦特 (W/Hz)
-        self.noise_power = (10 ** (self.config.NOISE_PSD_DBM / 10)) * 1e-3
+        self.noise_power = 10 ** (self.config.NOISE_PSD_DBW / 10)  # 从 dBW/Hz 转为 线性瓦特
 
     def calculate_free_space_path_loss(self, distance, freq):
         '''
@@ -17,7 +17,7 @@ class ChannelModel:
         fspl_linear = ( (4 * math.pi * distance) / lambda_c ) ** 2
         return fspl_linear
 
-    def get_tx_antenna_gain(self, theta, theta_3db=2.5, G_max=40.0):
+    def get_tx_antenna_gain(self, theta, theta_3db=2.5, G_max=32.44):
         '''
         发射端天线增益 (参考 ITU-R S.1528)
         这里简化为一个标准的降级函数, 返回线性增益
@@ -41,7 +41,7 @@ class ChannelModel:
         
         return 10 ** (gain_db / 10)
 
-    def get_rx_antenna_gain(self, theta, G_max=35.0):
+    def get_rx_antenna_gain(self, theta, G_max=26.42):
         '''
         接收端天线增益 (参考 ITU-R S.465-6)
         返回线性增益

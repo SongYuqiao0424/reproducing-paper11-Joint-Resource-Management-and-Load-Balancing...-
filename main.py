@@ -39,16 +39,16 @@ def bcd_optimization_placeholder(env, config, h_matrix, g_matrix):
     B_tensor = np.zeros((S, S, K))
     for s in range(S):
         for k in range(K):
-            if F_pattern[s, k] == 1.0:  # 卫星s服务小区k
-                # 选择也服务该小区的其他卫星作为接收方
-                available_receivers = [x for x in range(S) if x != s and F_pattern[x, k] == 1.0]
+            if F_pattern[s, k] == 1.0:  # 只有当 s 分配到了服务 k 的任务，才有可能需要把多余负载转给别人
+                # 选择同属可服务第k个小区的 LEO 卫星集合 PHI_K 的其他卫星作为接收方
+                phi_k = config.PHI_K[k]
+                available_receivers = [x for x in phi_k if x != s]
                 
                 if available_receivers:  # 如果存在可用的接收卫星
                     r = np.random.choice(available_receivers)
-                    B_tensor[s, r, k] = np.random.uniform(0.0, 5.0)  # 转移量随机在 0-5 包之间
-                else:
-                    # 没有其他卫星服务该小区，无法进行负载转移
-                    B_tensor[s, :, k] = 0.0  # 保持为零
+                    val = np.random.uniform(0.0, 5.0)
+                    B_tensor[s, r, k] = -val  # s给r发，s流出为负
+                    B_tensor[r, s, k] = val   # r接收，r流入为正
     
     return F_pattern, P_matrix, B_tensor
 
@@ -70,12 +70,7 @@ def main():
 
     start_time = time.time()
     
-    # 记录聚合观测值
-    record_avg_q = []
-    record_energy = []
-    record_throughput = []
-    
-    # 2. 模拟时隙循环开始
+    # 2. 模拟时隙循环开始 (指标由 env.history_metrics 统一管理)
     for n in range(config.MAX_TIME_SLOTS):
         # (a) 更新与获取信道状态 (当前时隙的 H 与 G)
         h_matrix, g_matrix = env.channel_model.generate_random_channel_matrices()
@@ -87,24 +82,22 @@ def main():
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
         step_metrics = env.step(F_opt, P_opt, B_opt)
         
-        record_avg_q.append(step_metrics['avg_queue'])
-        record_energy.append(step_metrics['energy_consumption'])
-        record_throughput.append(step_metrics['throughput'])
-        
         # 屏幕显示进度
         if (n + 1) % 100 == 0:
             avg_q = step_metrics['avg_queue']
-            erg = step_metrics['energy_consumption']
+            pwr = step_metrics['avg_power']
             tpt = step_metrics['throughput']
-            print(f'[Slot {n+1:4d} / {config.MAX_TIME_SLOTS}] Avg Queue: {avg_q:.2f} pkts | EnergyTx: {erg:.4f} J | Tput: {tpt:.2f}')
+            drp = step_metrics['drop_rate']
+            print(f'[Slot {n+1:4d} / {config.MAX_TIME_SLOTS}] Queue: {avg_q:.2f} pkts | Power: {pwr:.4f} W | Tput: {tpt:.2f} | Drop Rate: {drp*100:.2f}%')
 
     # 3. 运行结束，输出总体仿真指标
     elapsed_time = time.time() - start_time
     print('-----------------------------------------------------------')
     print(f'Simulation Finished in {elapsed_time:.2f} seconds.')
-    print(f'[Result] Overall Avg Queue Length: {np.mean(record_avg_q):.2f} pkts')
-    print(f'[Result] Overall Avg Tx Energy per slot: {np.mean(record_energy):.4f} J/slot')
-    print(f'[Result] Overall Sum Throughput: {np.sum(record_throughput):.2f} pkts')
+    print(f'[Result] Overall Avg Queue Length: {np.mean(env.history_metrics["avg_queue"]):.2f} pkts')
+    print(f'[Result] Overall Avg Power: {np.mean(env.history_metrics["avg_power"]):.2f} W')
+    print(f'[Result] Overall Sum Throughput: {np.sum(env.history_metrics["total_throughput"]):.2f} pkts')
+    print(f'[Result] Overall Drop Rate (Mean): {np.mean(env.history_metrics["drop_rate"])*100:.2f} %')
     print('===========================================================')
     
 if __name__ == '__main__':

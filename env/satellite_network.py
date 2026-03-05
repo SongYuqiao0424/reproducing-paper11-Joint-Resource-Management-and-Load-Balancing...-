@@ -22,7 +22,8 @@ class SatelliteNetworkEnv:
         self.history_metrics = {
             'avg_queue': [],
             'avg_power': [],
-            'total_throughput': []
+            'total_throughput': [],
+            'drop_rate': []
         }
 
     def _drift_arrival_rates(self):
@@ -54,6 +55,7 @@ class SatelliteNetworkEnv:
         arrived_pkts_for_cells = np.random.poisson(lambda_list)
         
         # 构建并分配到所属服务卫星，分配策略：平均分配排队
+        # a_sk_n表示arrived卫星s服务小区k的包数
         a_sk_n = np.zeros((S, K))
         for k in range(K):
             # 简单的均匀分发请求至所有覆盖该小区的卫星 (根据论文 Φ(k) 关联)
@@ -67,75 +69,97 @@ class SatelliteNetworkEnv:
                     
         return a_sk_n
 
-    def update_queues(self, received_a, routed_d, transmitted_x):
-        '''
-        根据论文公式(8)更新队列
-        q_{s,k}[n+1] = q_{s,k}[n] + d_{s,k}[n] + a_{s,k}[n] - x_{s,k}[n]
-        '''
-        S = self.config.NUM_SATELLITES
-        K = self.config.NUM_CELLS
-        
-        for s in range(S):
-            for k in range(K):
-                # 更新队列模型，且保证队列非负以及不超过最高容量
-                new_q = self.queue_lengths[s, k] + routed_d[s, k] + received_a[s, k] - transmitted_x[s, k]
-                new_q = max(0.0, new_q)
-                
-                # 丢包限制 (如果有最大存储容量)
-                if new_q > self.config.MAX_QUEUE_STORAGE:
-                    new_q = self.config.MAX_QUEUE_STORAGE
-                
-                self.queue_lengths[s, k] = new_q
-
     def step(self, F_pattern, P_matrix, B_tensor):
-        '''
-        通过外部 BCD 算法求解到的 F, P, B 动作执行状态步进。
-        计算信噪比 -> 可达速率 R -> 实际传输包数 x -> 更新队列。
-        返回本时隙的综合性能指标字典。
-        '''
-        # 1. 漂移与到达
-        self.current_time_slot += 1
-        if self.current_time_slot % self.config.DEMAND_DRIFT_STEPS == 0:
-            self._drift_arrival_rates()
-            
-        a_sk_n = self.generate_arrivals()
-        
-        # 2. 从星际链路矩阵转移量 B 中计算队列变动 d_{s,k}
+        """
+        按照正确的时隙序列完成调度更新：
+        1. 记录此时隙的初始队列
+        2. 负载均衡：根据B调整队列 (Q_temp = Q_init + D)
+        3. 状态传输：根据F、P与Q_temp计算此时隙真实传输 x
+        4. 时隙尾声：生成此时隙内发生的最新请求到达 A
+        5. 计算下时隙初始队列：Q_next = Q_init + D - X + A
+        """
         S = self.config.NUM_SATELLITES
         K = self.config.NUM_CELLS
+        
+        self.current_time_slot += 1
+        
+        # 0. 锁定此时隙操作的初始基准队列
+        initial_q = self.queue_lengths.copy()
+        
+        # 1. 根据星间链路矩阵 B 计算此时隙的负载均衡变动 d_{s,k}
         d_sk_n = np.zeros((S, K))
         for s in range(S):
             for k in range(K):
-                # 汇总其他所有卫星 r 转移给 s 的属于目标小区 k 的包
-                d_sk_n[s, k] = np.sum(B_tensor[:, s, k]) 
+                # B_tensor 已经是在优化中包含了方向符号的张量(b_{r,s} = -b_{s,r})，因此正负自带，无需二次相减
+                phi_k = self.config.PHI_K[k]
+                d_sk_n[s, k] = sum([B_tensor[r, s, k] for r in phi_k])
         
-        # 3. 计算实时发射速率与有效发包数目 x_{s,k} 
+        # 计算负载均衡后的中间态队列 (作为本次发射的发包容量约束)
+        temp_balanced_q = initial_q + d_sk_n
+        temp_balanced_q = np.maximum(0.0, temp_balanced_q)
+        
+        # 2. 计算本时隙有效发包数目 x_{s,k} 
         x_sk_n = np.zeros((S, K))
-        
-        # 这里为了简化框架演示，跳过了实际复杂的香农信干噪比算子，
-        # 在完整主干接入后，这一步需要在外部或者内部将 P 转换为香农速率 R_sk.
-        # 我们假设外部优化或此步骤已知每个链路给出的实际可下发数据包容量 R_pkts
-        # R_pkts = np.random.uniform(0, 100, size=(S,K)) * F_pattern ...
-        R_pkts = F_pattern * (np.sum(P_matrix, axis=0) * 0.5) # 模拟占位符评估
+        R_pkts = np.zeros((S, K))
+        for s_idx in range(S):
+            for k_idx in range(K):
+                if F_pattern[s_idx, k_idx] > 0:
+                    total_power_sk = np.sum(P_matrix[:, s_idx, k_idx])
+                    R_pkts[s_idx, k_idx] = total_power_sk * 10
+        R_pkts = R_pkts * F_pattern
         
         for s in range(S):
             for k in range(K):
-                # 公式 (7)
-                available_to_send = self.queue_lengths[s, k] + d_sk_n[s, k]
-                x_sk_n[s, k] = min(R_pkts[s, k], available_to_send)
-                x_sk_n[s, k] = max(0, x_sk_n[s, k])
+                # 真实传输量严格遭受"均衡后队列可用数据包量"的约束
+                x_sk_n[s, k] = min(R_pkts[s, k], temp_balanced_q[s, k])
+                x_sk_n[s, k] = max(0.0, x_sk_n[s, k])
         
-        # 4. 更新物理队列
-        self.update_queues(a_sk_n, d_sk_n, x_sk_n)
+        # 3. 计算此时隙的新到达数据包量 a_{s,k}
+        if self.current_time_slot % self.config.DEMAND_DRIFT_STEPS == 0:
+            self._drift_arrival_rates()
+        a_sk_n = self.generate_arrivals()
         
-        # 5. 记录指标等...
+        # 4. 根据 时隙初始队列、负载均衡变更、传输量、新到到达量 更新出下一时隙队列
+        total_dropped = 0.0
+        for s in range(S):
+            for k in range(K):
+                new_q = initial_q[s, k] + d_sk_n[s, k] - x_sk_n[s, k] + a_sk_n[s, k]
+                new_q = max(0.0, new_q)
+                
+                if new_q > self.config.MAX_QUEUE_STORAGE:
+                    total_dropped += (new_q - self.config.MAX_QUEUE_STORAGE)
+                    new_q = self.config.MAX_QUEUE_STORAGE
+                
+                self.queue_lengths[s, k] = new_q
+        
+        # 5. 综合指标收集
         avg_q_len = np.mean(self.queue_lengths)
-        energy_tx = np.sum(P_matrix) * self.config.TIME_SLOT_DURATION
-        # (这里未累加ISL总开销作简化展示)
+        total_arrived = np.sum(a_sk_n)
+        current_drop_rate = total_dropped / total_arrived if total_arrived > 0 else 0.0
         
+        energy_tx = np.sum(P_matrix) * self.config.TIME_SLOT_DURATION
+        energy_isl = 0
+        for r in range(S):
+            for s in range(S):
+                if r != s: # 任何方向上的传输都需要能耗
+                    c_rs = np.sum(np.abs(B_tensor[r, s, :]))
+                    if c_rs > 0:
+                        t_rs = c_rs * self.config.PACKET_SIZE / self.config.ISL_DATA_RATE
+                        energy_isl += self.config.ISL_POWER_CONSUMPTION * t_rs
+        total_energy = energy_tx + energy_isl
+        
+        avg_power = total_energy / self.config.TIME_SLOT_DURATION
+        total_throughput = np.sum(x_sk_n)
+        
+        self.history_metrics['avg_queue'].append(avg_q_len)
+        self.history_metrics['avg_power'].append(avg_power)
+        self.history_metrics['total_throughput'].append(total_throughput)
+        self.history_metrics['drop_rate'].append(current_drop_rate)
+
         return {
             'avg_queue': avg_q_len,
-            'energy_consumption': energy_tx,
-            'throughput': np.sum(x_sk_n)
+            'avg_power': avg_power,
+            'energy_consumption': total_energy,
+            'throughput': total_throughput,
+            'drop_rate': current_drop_rate
         }
-
