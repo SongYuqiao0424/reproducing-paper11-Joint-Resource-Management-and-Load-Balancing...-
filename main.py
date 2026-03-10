@@ -4,6 +4,7 @@ import time
 
 from config import Config
 from env.satellite_network import SatelliteNetworkEnv
+from utils.plotter import plot_simulation_results, plot_beam_power_heatmap
 
 def bcd_optimization_placeholder(env, config, h_matrix, g_matrix):
     '''
@@ -74,6 +75,9 @@ def main():
 
     start_time = time.time()
     
+    # 用于收集卫星0的历史功率矩阵以供热力图绘制
+    p_history_sat0 = []
+    
     # 2. 模拟时隙循环开始 (指标由 env.history_metrics 统一管理)
     for n in range(config.MAX_TIME_SLOTS):
         # (a) 更新与获取信道状态 (当前时隙的 H 与 G)
@@ -85,6 +89,8 @@ def main():
         
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
         step_metrics = env.step(F_opt, P_opt, B_opt)
+        if n < 50:
+            p_history_sat0.append(P_opt.copy())
         
         # 屏幕显示进度
         if (n + 1) % 100 == 0:
@@ -104,6 +110,12 @@ def main():
     print(f'[Result] Overall Sum Throughput: {np.sum(env.history_metrics["total_throughput"]):.2f} pkts')
     print(f'[Result] Overall Drop Rate (Mean): {np.mean(env.history_metrics["drop_rate"])*100:.2f} %')
     print('===========================================================')
+    
+    print('[INFO] Generating performance plots in 仿真结果/ ...')
+    plot_simulation_results(env.history_metrics, config)
+    if len(p_history_sat0) > 0:
+        plot_beam_power_heatmap(p_history_sat0, config)
+    print('[INFO] Done.')
     
 if __name__ == '__main__':
     main()
