@@ -15,14 +15,17 @@ def bcd_optimization_placeholder(env, config, h_matrix, g_matrix):
     K = config.NUM_CELLS
     L = config.NUM_FREQUENCY_SEGMENTS
     
-    # 随机生成一个合理的跳波束策略图 F (S x K) - 每颗卫星随机选 Nb 个波束服务
+    # 随机生成一个合理的跳波束策略图 F (S x K) - 每颗卫星随机在其覆盖小区(OMEGA_S)内选 Nb 个波束服务
     F_pattern = np.zeros((S, K))
     for s in range(S):
-        chosen_cells = np.random.choice(K, config.NUM_BEAMS_PER_SAT, replace=False)
-        F_pattern[s, chosen_cells] = 1.0
+        available_cells = config.OMEGA_S[s]
+        num_to_choose = min(config.NUM_BEAMS_PER_SAT, len(available_cells))
+        if num_to_choose > 0:
+            chosen_cells = np.random.choice(available_cells, num_to_choose, replace=False)
+            F_pattern[s, chosen_cells] = 1.0
         
     # 随机生成符合功率上限的功率分配矩阵 P (L x S x K)
-    P_matrix = np.random.uniform(0.1, 10.0, (L, S, K))
+    P_matrix = np.random.uniform(6.0, 10.0, (L, S, K))
     # 仅向 F 限定的波束注入功率
     for s in range(S):
         for k in range(K):
@@ -53,6 +56,7 @@ def bcd_optimization_placeholder(env, config, h_matrix, g_matrix):
     return F_pattern, P_matrix, B_tensor
 
 def main():
+    np.set_printoptions(precision=1, edgeitems=5, linewidth=120, suppress=True)
     print('===========================================================')
     print('  Starting Multi-Satellite Beam Hopping Simulation (Energy Min) ')
     print('===========================================================')
@@ -89,6 +93,7 @@ def main():
             tpt = step_metrics['throughput']
             drp = step_metrics['drop_rate']
             print(f'[Slot {n+1:4d} / {config.MAX_TIME_SLOTS}] Queue: {avg_q:.2f} pkts | Power: {pwr:.4f} W | Tput: {tpt:.2f} | Drop Rate: {drp*100:.2f}%')
+            #print(f'Queue Lengths Matrix Sample:\n{env.queue_lengths}')
 
     # 3. 运行结束，输出总体仿真指标
     elapsed_time = time.time() - start_time

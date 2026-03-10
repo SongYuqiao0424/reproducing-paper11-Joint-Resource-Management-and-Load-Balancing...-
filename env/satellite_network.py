@@ -46,7 +46,7 @@ class SatelliteNetworkEnv:
         S = self.config.NUM_SATELLITES
         K = self.config.NUM_CELLS
         
-        # 将 Mbps 转化为这个时隙内的数据包个数 (以 1Mbits 为 1 包)
+        # 将 Mbps 转化为这个时隙内的数据包个数
         # Mbps -> 10^6 bits / s. 
         # lambda_pkts = (Rate(bits/s) * T0) / M0
         lambda_list = (self.current_arrival_rates * self.config.TIME_SLOT_DURATION) / self.config.PACKET_SIZE
@@ -58,14 +58,18 @@ class SatelliteNetworkEnv:
         # a_sk_n表示arrived卫星s服务小区k的包数
         a_sk_n = np.zeros((S, K))
         for k in range(K):
-            # 简单的均匀分发请求至所有覆盖该小区的卫星 (根据论文 Φ(k) 关联)
-            pkts_per_sat = arrived_pkts_for_cells[k] // S
-            remainder = arrived_pkts_for_cells[k] % S
+            # 均匀分发请求至所有可覆盖该小区的卫星集合 Φ(k)
+            phi_k = self.config.PHI_K[k]
+            num_sats = len(phi_k)
             
-            for s in range(S):
-                a_sk_n[s, k] = pkts_per_sat
-                if s < remainder: # 分配余数
-                    a_sk_n[s, k] += 1
+            if num_sats > 0:
+                pkts_per_sat = arrived_pkts_for_cells[k] // num_sats
+                remainder = arrived_pkts_for_cells[k] % num_sats
+    
+                for idx, s in enumerate(phi_k):
+                    a_sk_n[s, k] = pkts_per_sat
+                    if idx < remainder: # 分配余数
+                        a_sk_n[s, k] += 1
                     
         return a_sk_n
 
@@ -105,7 +109,7 @@ class SatelliteNetworkEnv:
             for k_idx in range(K):
                 if F_pattern[s_idx, k_idx] > 0:
                     total_power_sk = np.sum(P_matrix[:, s_idx, k_idx])
-                    R_pkts[s_idx, k_idx] = total_power_sk * 10
+                    R_pkts[s_idx, k_idx] = total_power_sk * 100
         R_pkts = R_pkts * F_pattern
         
         for s in range(S):
@@ -146,7 +150,8 @@ class SatelliteNetworkEnv:
                     if c_rs > 0:
                         t_rs = c_rs * self.config.PACKET_SIZE / self.config.ISL_DATA_RATE
                         energy_isl += self.config.ISL_POWER_CONSUMPTION * t_rs
-        total_energy = energy_tx + energy_isl
+        #total_energy = energy_tx + energy_isl
+        total_energy = energy_tx
         
         avg_power = total_energy / self.config.TIME_SLOT_DURATION
         total_throughput = np.sum(x_sk_n)

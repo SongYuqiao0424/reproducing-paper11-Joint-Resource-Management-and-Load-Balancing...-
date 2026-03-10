@@ -20,14 +20,14 @@ class Config:
 
     # ---------------- 业务需求流模型 (排队与负载) ----------------
     TIME_SLOT_DURATION = 10e-3    # 时隙时长 (10 ms)
-    MAX_TIME_SLOTS = 1500         # 仿真总时隙步数
+    MAX_TIME_SLOTS = 200          # 仿真总时隙步数
     PACKET_SIZE = 5e3             # 单元数据包大小 M0 (5 Kbits)
     
     # 泊松分布包到达率范围
     ARRIVAL_RATE_MIN = 80e6       
-    ARRIVAL_RATE_MAX = 320e6      
+    ARRIVAL_RATE_MAX = 250e6      
     DEMAND_DRIFT_STEPS = 50       
-    MAX_QUEUE_STORAGE = 350       
+    MAX_QUEUE_STORAGE = 10000       
 
     # ---------------- 卫星与小区覆盖关系集合 ----------------
     # 依照表格：|S|=9, 每个卫星覆盖19个小区，总共99个小区。生成合理的分布覆盖映射：
