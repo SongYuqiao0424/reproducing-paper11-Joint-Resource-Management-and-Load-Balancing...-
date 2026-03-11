@@ -5,6 +5,7 @@ import time
 from config import Config
 from env.satellite_network import SatelliteNetworkEnv
 from utils.plotter import plot_simulation_results, plot_beam_power_heatmap
+from algorithms.proposed_algo import ProposedAlgorithm
 
 def bcd_optimization_placeholder(env, config, h_matrix, g_matrix):
     '''
@@ -66,6 +67,9 @@ def main():
     config = Config()
     env = SatelliteNetworkEnv(config)
     
+    # 实例化提议的BCD优化算法
+    algo = ProposedAlgorithm(config, env)
+    
     print(f'[INFO] Number of Satellites: {config.NUM_SATELLITES}')
     print(f'[INFO] Number of Beams per Sat: {config.NUM_BEAMS_PER_SAT}')
     print(f'[INFO] Number of Ground Cells: {config.NUM_CELLS}')
@@ -84,8 +88,9 @@ def main():
         h_matrix, g_matrix = env.channel_model.generate_random_channel_matrices()
         
         # (b) 进行联合求解策略计算：BCD 优化获取 F[n], P[n], B[n] 
-        # TODO: 替换为 algorithms/solvers.py 中真实的 BCD 函数
-        F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        # 使用真实的 BCD 交替优化算法求解 (保留原 placeholder 用于对比/备份)
+        # F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        F_opt, P_opt, B_opt = algo.step(h_matrix, g_matrix, env.queue_lengths)
         
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
         step_metrics = env.step(F_opt, P_opt, B_opt)

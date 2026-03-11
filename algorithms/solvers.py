@@ -17,7 +17,9 @@ class OptimizationSolvers:
         
     def _calculate_interference(self, P_matrix, F_pattern, h_matrix, s, k, l):
         interference = 0.0
-        for s_idx in range(self.S):
+        # 根据论文式(1)，小区k受到的干扰仅来自能覆盖小区k的卫星集合(PHI_K)
+        for s_idx in self.config.PHI_K[k]:
+            # 干扰可能来自该卫星发往其他小区的波束
             for k_idx in range(self.K):
                 if not (s_idx == s and k_idx == k):
                     interference += abs(h_matrix[s_idx, k, k_idx])**2 * P_matrix[l, s_idx, k_idx] * F_pattern[s_idx, k_idx]
@@ -26,16 +28,16 @@ class OptimizationSolvers:
     def solve_F_MPMM(self, F_prev, P_fixed, B_fixed, h_matrix, g_matrix, Q_lengths):
         ''' Algorithm 2: MPMM for F Matrix '''
         F_var = cp.Variable((self.S, self.K), nonneg=True)
-        alpha = np.ones((self.S, self.K)) * 0.1
-        beta = 0.5
-        rho = 1.1
+        alpha = np.ones((self.S, self.K)) * 0.1                     # 拉格朗日乘子系数
+        beta = 0.5                                                  # 惩罚函数系数
+        rho = 1.1                                                   # 惩罚函数更新速率
         Theta_rounds = getattr(self.config, 'MPMM_THETA_ROUNDS', 5)
         
         F_best = F_prev.copy()
         for _ in range(Theta_rounds):
             constraints = [F_var <= 1.0]
             for s in range(self.S):
-                constraints += [cp.sum(F_var[s, :]) <= self.config.NUM_BEAMS_PER_SAT]
+                constraints += [cp.sum(F_var[s, :]) <= self.config.NUM_BEAMS_PER_SAT]   # 约束13d
                 
             J_mp = cp.sum(cp.multiply(alpha, (1 - 2*F_best)*F_var))
             
@@ -46,9 +48,9 @@ class OptimizationSolvers:
                     for l in range(self.L):
                         I_skl = self._calculate_interference(P_fixed, F_best, h_matrix, s, k, l)
                         noise = self.env.channel_model.noise_power * self.config.BANDWIDTH_PER_SEGMENT
-                        sinr = (abs(h_matrix[s, k, k])**2 * P_fixed[l, s, k]) / (noise + I_skl + 1e-12)
-                        R_val += self.config.BANDWIDTH_PER_SEGMENT * np.log2(1 + sinr)
-                    expected_rates[s, k] = R_val * (self.config.TIME_SLOT_DURATION / self.config.PACKET_SIZE)
+                        sinr = (abs(h_matrix[s, k, k])**2 * P_fixed[l, s, k]) / (noise + I_skl + 1e-12)         # 加1e-12来避免除零错误
+                        R_val += self.config.BANDWIDTH_PER_SEGMENT * np.log2(1 + sinr)                          # 式3
+                    expected_rates[s, k] = R_val * (self.config.TIME_SLOT_DURATION / self.config.PACKET_SIZE)   # 表示约束13k的R_sk*T0/M0
                     
             utility = cp.sum(cp.multiply(Q_lengths, cp.multiply(expected_rates, F_var))) 
             objective = cp.Minimize(-utility / self.config.L_0 + beta * J_mp)

@@ -4,7 +4,7 @@ from .solvers import OptimizationSolvers
 
 class ProposedAlgorithm:
     '''
-    打包论文核心的 Algorithm 1 (BCD Algorithm)
+    BCD Algorithm
     '''
     def __init__(self, config, env):
         self.config = config
