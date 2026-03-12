@@ -90,7 +90,12 @@ def main():
         # (b) 进行联合求解策略计算：BCD 优化获取 F[n], P[n], B[n] 
         # 使用真实的 BCD 交替优化算法求解 (保留原 placeholder 用于对比/备份)
         # F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
-        F_opt, P_opt, B_opt = algo.step(h_matrix, g_matrix, env.queue_lengths)
+        # F_opt, P_opt, B_opt = algo.step(h_matrix, g_matrix, env.queue_lengths)
+
+        # 此处先使用 placeholder 生成的 P_opt 和 B_opt，单独测试 MPMM 算法对 F 的优化效果
+        _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, P_opt, B_opt, h_matrix, g_matrix, env.queue_lengths)
+        algo.F_prev = F_opt
         
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
         step_metrics = env.step(F_opt, P_opt, B_opt)
