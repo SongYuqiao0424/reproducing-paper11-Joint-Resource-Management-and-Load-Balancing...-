@@ -26,10 +26,10 @@ class OptimizationSolvers:
         return interference
 
     def solve_F_MPMM(self, F_prev, P_fixed, B_fixed, h_matrix, g_matrix, Q_lengths):
-        ''' Algorithm 2: MPMM for F Matrix '''
+        """ Algorithm 2: MPMM for F Matrix """
         F_var = cp.Variable((self.S, self.K), nonneg=True)
-        alpha = np.ones((self.S, self.K)) * 0.1                     # 拉格朗日乘子系数
-        beta = 0.5                                                  # 惩罚函数系数
+        alpha = np.ones((self.S, self.K)) * (0.1 / self.config.L_0)                     # 拉格朗日乘子系数
+        beta = 0.5 / self.config.L_0                                                  # 惩罚函数系数
         rho = 1.1                                                   # 惩罚函数更新速率
         Theta_rounds = getattr(self.config, 'MPMM_THETA_ROUNDS', 5)
         
@@ -40,101 +40,130 @@ class OptimizationSolvers:
                 d_sk[s_idx, k_idx] = sum([B_fixed[r, s_idx, k_idx] for r in self.config.PHI_K[k_idx]])
         Q_temp = np.maximum(0.0, Q_lengths + d_sk)
         
+        # 覆盖范围掩码 valid_mask，确保 F_var 只能在合法的卫星-小区对上取值
+        valid_mask = np.zeros((self.S, self.K))
+        for k in range(self.K):
+            for s in self.config.PHI_K[k]:
+                valid_mask[s, k] = 1.0
+
+        W_band = self.config.BANDWIDTH_PER_SEGMENT
+        noise = self.env.channel_model.noise_power * W_band
+        # 缩放因子，R_sk(bps) * time_scale，把传输速率转化为吞吐的包数
+        time_scale = self.config.TIME_SLOT_DURATION / self.config.PACKET_SIZE
+
+        # 信号接收矩阵，在确定P的前提下，计算对于每个小区k在频段l上，收到卫星s_idx到小区k_idx波束的信号大小（k_idx=k时为有用信号）
+        HP = np.zeros((self.K, self.S, self.K, self.L))
+        for k in range(self.K):
+            for s_idx in self.config.PHI_K[k]:
+                for k_idx in range(self.K):
+                    for l in range(self.L):
+                        HP[k, s_idx, k_idx, l] = abs(h_matrix[s_idx, k, k_idx])**2 * P_fixed[l, s_idx, k_idx]
+
+        # 有用信号矩阵，在确定P的前提下，计算对于每个小区k在频段l上，来自卫星s的有用信号强度
+        H_self_P = np.zeros((self.S, self.K, self.L))
+        for s in range(self.S):
+            for k in range(self.K):
+                for l in range(self.L):
+                    H_self_P[s, k, l] = abs(h_matrix[s, k, k])**2 * P_fixed[l, s, k]
+
+        Z_w_limit = 10 ** (self.config.Z_MAX_DBW / 10.0)
+        K_G = getattr(self.config, 'K_G', [])
+        L_K = getattr(self.config, 'L_K', {})
+        # 各个GSO小区受到卫星s到小区k波束的干扰矩阵
+        GSO_coeffs = []
+        for k_g in K_G:
+            overlap_bands = L_K.get(k_g, range(self.L))
+            coeff = np.zeros((self.S, self.K))
+            for l in overlap_bands:
+                for s in range(self.S):
+                    for k in range(self.K):
+                        coeff[s, k] += (abs(g_matrix[s, k_g, k])**2) * P_fixed[l, s, k]
+            GSO_coeffs.append(coeff)
+            
         F_best = F_prev.copy()
         for _ in range(Theta_rounds):
-            # 约束25
-            constraints = [F_var <= 1.0]
+            # 约束13c
+            constraints = [F_var <= valid_mask]  
             for s in range(self.S):
                 # 约束13d
                 constraints += [cp.sum(F_var[s, :]) <= self.config.NUM_BEAMS_PER_SAT]   
-                    
-            # 约束13c：若卫星 s 无法覆盖小区 k，则强制 f_{s,k} == 0
-            for k in range(self.K):
-                for s in range(self.S):
-                    if s not in self.config.PHI_K[k]:
-                        constraints += [F_var[s, k] == 0]
-            
+            for coeff in GSO_coeffs:
+                # 约束13g
+                constraints += [cp.sum(cp.multiply(coeff, F_var)) <= Z_w_limit] 
 
-            # 约束13g：GSO系统的干扰限制 (对F进行优化时)
-            Z_w_limit = 10 ** (self.config.Z_MAX_DBW / 10.0)
-            K_G = getattr(self.config, 'K_G', [])
-            L_K = getattr(self.config, 'L_K', {})
-            for k_g in K_G:
-                overlap_bands = L_K.get(k_g, range(self.L))
-                interference_to_gso = 0
-                for l in overlap_bands:
-                    for s in range(self.S):
-                        for k in range(self.K):
-                            interference_to_gso += (abs(g_matrix[s, k_g, k])**2) * P_fixed[l, s, k] * F_var[s, k]
-                constraints += [interference_to_gso <= Z_w_limit]
-                
-        # 根据论文式(29)完整构造MM替代惩罚函数 J_mp，为原函数上界，在F上是凸函数
-            # 内部替代项: (1 - 2 * F_best) * F_var + F_best^2
             f_surrogate = cp.multiply(1 - 2 * F_best, F_var) + F_best**2
             J_mp = cp.sum(cp.multiply(alpha, f_surrogate)) + beta * cp.sum(cp.square(f_surrogate))
             
             # 引入真实传输变量 X_var (体现原论文式31中的辅助变量转换，以及式32a中对每个链路的约束)
-            X_var = cp.Variable((self.S, self.K), nonneg=True)
-            # 约束13l
-            constraints += [X_var <= Q_temp]                                               # 队列存储上限约束 (对应约束13j)
+            X_var = cp.Variable((self.S, self.K))
+            # X_var = cp.Variable((self.S, self.K), nonneg=True)
+            # slack_var = cp.Variable((self.S, self.K), nonneg=True)
+            constraints += [X_var <= Q_temp] 
 
-            # 按照论文式(30)~(31)，这里需要为每个 (s, k) 链路构造替代函数及约束
+            # 式1的I_skl计算
+            I_fixed = np.zeros((self.S, self.K, self.L))
+            for k in range(self.K):
+                # 直接计算小区k受到PHI_K内所有卫星的信号总和，包括了干扰和有用信号，再减去有用信号得到总干扰
+                total_I_k = np.zeros(self.L)
+                for s_idx in self.config.PHI_K[k]:
+                    for k_idx in range(self.K):
+                        total_I_k += HP[k, s_idx, k_idx, :] * F_best[s_idx, k_idx]
+                for s in self.config.PHI_K[k]:
+                    I_fixed[s, k, :] = np.maximum(0, total_I_k - HP[k, s, k, :] * F_best[s, k])
+
+            # 式30a、30b，矩阵形式计算，计算每个小区k在频段l上，来自卫星s的相关参数
+            gamma_best = H_self_P / (noise + I_fixed + 1e-12)
+            phi_best = gamma_best / (1 + gamma_best)
+            zeta_best = np.log2(1 + gamma_best) - phi_best * np.log2(gamma_best + 1e-12)
+
+            log2_e = np.log2(np.e)
+            term1 = phi_best * np.log2(np.e * gamma_best + 1e-12) + zeta_best
+            term2_coeff = log2_e * phi_best * gamma_best / (H_self_P + 1e-12)
+            
+            # 计算式31中除了I_var（包括F_var的I）其他项
+            Term1_sum = np.sum(W_band * term1, axis=2)                   
+            Noise_sum = np.sum(W_band * term2_coeff * noise, axis=2)     
+
             for s in range(self.S):
                 for k in range(self.K):
-                    W = self.config.BANDWIDTH_PER_SEGMENT
-                    # surrogate_R_sk表示构造的R_sk替代函数，为原函数下界，在F上是凹函数
-                    surrogate_R_sk = 0
-                    for l in range(self.L):
-                        I_skl = self._calculate_interference(P_fixed, F_best, h_matrix, s, k, l)
-                        noise = self.env.channel_model.noise_power * W
-                        
-                        # 式(30a) 和 (30b): 基于上一轮 F_best 计算的 gamma, phi, zeta
-                        gamma_best = (abs(h_matrix[s, k, k])**2 * P_fixed[l, s, k]) / (noise + I_skl + 1e-12)
-                        phi_best = gamma_best / (1 + gamma_best)
-                        zeta_best = np.log2(1 + gamma_best) - phi_best * np.log2(gamma_best + 1e-12)
-                        
-                        # 构造需要带入 CVXPY 的替代函数项 (主要针对F_var相关的展开)
-                        # 由于 CVXPY 重载了运算符，可以直接传入 F_var 获取解析表达式
-                        I_skl_var = self._calculate_interference(P_fixed, F_var, h_matrix, s, k, l)
-                        
-                        log2_e = np.log2(np.e)
-                        # 替代函数第一项（包含上一轮先验信息的常数乘子，仅保留对 F_var 呈线性的部分）
-                        term1 = phi_best * np.log2(np.e * gamma_best + 1e-12) + zeta_best
-                        # 替代函数第二项（干扰项的线性化惩罚）
-                        term2_coeff = log2_e * phi_best * gamma_best / (abs(h_matrix[s, k, k])**2 * P_fixed[l, s, k] + 1e-12)
-                        term2 = term2_coeff * (noise + I_skl_var)
-                        
-                        surrogate_R_sk += W * (term1 * F_var[s, k] - term2)
-                    
-                    # 式(32a)：每个 (s, k) 对应的传输数据包数量不能超过其信道容量（考虑参数 T0 / M0）
-                    rate_sk_bound = surrogate_R_sk * (self.config.TIME_SLOT_DURATION / self.config.PACKET_SIZE)
-                    # 约束32a
+                    if valid_mask[s, k] == 0:
+                        # 如果这个卫星-小区对不合法，直接约束X_var为0，并跳过后续计算
+                        constraints += [X_var[s, k] == 0]
+                        continue
+                    # 结合式1计算式31中I_var，并得到surrogate_R_sk
+                    W_term = W_band * term2_coeff[s, k, :]               
+                    weight_sk = np.sum(HP[k, :, :, :] * W_term, axis=-1) 
+                    weight_sk[s, k] = 0.0 
+                    surrogate_R_sk = Term1_sum[s, k] * F_var[s, k] - Noise_sum[s, k] - cp.sum(cp.multiply(weight_sk, F_var))
+                    rate_sk_bound = surrogate_R_sk * time_scale
                     constraints += [X_var[s, k] <= rate_sk_bound]
+                    # constraints += [X_var[s, k] <= rate_sk_bound + slack_var[s, k]]
             
             # utility_surrogate 表示论文最小化目标式19中q_sk*x_sk这一项，仅表示这一项是因为固定P、B时其他项为定值，最小化目标中仅剩余此项需要优化
             utility_surrogate = cp.sum(cp.multiply(Q_lengths, X_var))  
             
             # J_mp 即对应式(29)完整展开项，内部已包含 alpha 和 beta 相关惩罚
             objective = cp.Minimize(-utility_surrogate / self.config.L_0 + J_mp)
+            # objective = cp.Minimize(-utility_surrogate / self.config.L_0 + J_mp + 1e5 * cp.sum(slack_var))
             
             prob = cp.Problem(objective, constraints)
             try:
-                prob.solve(solver=cp.SCS)
+                prob.solve(solver=cp.SCS, warm_start=True)
                 if F_var.value is not None:
                     F_best = F_var.value
+                    print(f"        [Theta {_}] Current F_best sum: {np.sum(F_best):.2f}, Max Val: {np.max(F_best):.2f}")
                     alpha += 2 * beta * F_best * (1 - F_best)
                     beta *= rho
                 else:
                     break
             except Exception:
                 break
-                
+
         F_quantized = np.zeros((self.S, self.K))
         for s in range(self.S):
             top_k_indices = np.argsort(F_best[s, :])[-self.config.NUM_BEAMS_PER_SAT:]
             for k_idx in top_k_indices:
-                if F_best[s, k_idx] > 0.05:
-                    F_quantized[s, k_idx] = 1.0
+                F_quantized[s, k_idx] = 1.0
                     
         return F_quantized
 

@@ -89,13 +89,13 @@ def main():
         
         # (b) 进行联合求解策略计算：BCD 优化获取 F[n], P[n], B[n] 
         # 使用真实的 BCD 交替优化算法求解 (保留原 placeholder 用于对比/备份)
-        # F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
         # F_opt, P_opt, B_opt = algo.step(h_matrix, g_matrix, env.queue_lengths)
 
         # 此处先使用 placeholder 生成的 P_opt 和 B_opt，单独测试 MPMM 算法对 F 的优化效果
-        _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
-        F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, P_opt, B_opt, h_matrix, g_matrix, env.queue_lengths)
-        algo.F_prev = F_opt
+        # _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        # F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, P_opt, B_opt, h_matrix, g_matrix, env.queue_lengths)
+        # algo.F_prev = F_opt
         
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
         step_metrics = env.step(F_opt, P_opt, B_opt)
@@ -103,12 +103,22 @@ def main():
             p_history_sat0.append(P_opt.copy())
         
         # 屏幕显示进度
-        if (n + 1) % 100 == 0:
+        if (n + 1) % 1 == 0:
             avg_q = step_metrics['avg_queue']
             pwr = step_metrics['avg_power']
             tpt = step_metrics['throughput']
             drp = step_metrics['drop_rate']
             print(f'[Slot {n+1:4d} / {config.MAX_TIME_SLOTS}] Queue: {avg_q:.2f} pkts | Power: {pwr:.4f} W | Tput: {tpt:.2f} | Drop Rate: {drp*100:.2f}%')
+            
+            # --- 新增：打印本时隙各卫星选择了哪些小区及其对应的 F_opt 分值 ---
+            allocation_strs = []
+            for s in range(config.NUM_SATELLITES):
+                selected_indices = np.argsort(F_opt[s, :])[-4:][::-1].tolist()
+                # 将索引和对应的分值组合成字符串，保留2位小数
+                details = [f"C{idx}({F_opt[s, idx]:.2f})" for idx in selected_indices]
+                allocation_strs.append(f"Sat{s}: [{', '.join(details)}]")
+            print("    Beam Allocation -> " + " | ".join(allocation_strs))
+            
             #print(f'Queue Lengths Matrix Sample:\n{env.queue_lengths}')
 
     # 3. 运行结束，输出总体仿真指标
