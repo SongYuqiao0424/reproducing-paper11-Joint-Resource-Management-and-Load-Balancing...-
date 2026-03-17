@@ -51,20 +51,23 @@ class OptimizationSolvers:
         # 缩放因子，R_sk(bps) * time_scale，把传输速率转化为吞吐的包数
         time_scale = self.config.TIME_SLOT_DURATION / self.config.PACKET_SIZE
 
+        # 引入虚拟/参考功率进行探测，避免上一次P为0导致死锁。假设可用功率被平均分配。
+        P_virtual = np.ones_like(P_fixed) * (self.config.MAX_POWER_PER_SAT / (self.config.NUM_BEAMS_PER_SAT * self.L))
+
         # 信号接收矩阵，在确定P的前提下，计算对于每个小区k在频段l上，收到卫星s_idx到小区k_idx波束的信号大小（k_idx=k时为有用信号）
         HP = np.zeros((self.K, self.S, self.K, self.L))
         for k in range(self.K):
             for s_idx in self.config.PHI_K[k]:
                 for k_idx in range(self.K):
                     for l in range(self.L):
-                        HP[k, s_idx, k_idx, l] = abs(h_matrix[s_idx, k, k_idx])**2 * P_fixed[l, s_idx, k_idx]
+                        HP[k, s_idx, k_idx, l] = abs(h_matrix[s_idx, k, k_idx])**2 * P_virtual[l, s_idx, k_idx]
 
         # 有用信号矩阵，在确定P的前提下，计算对于每个小区k在频段l上，来自卫星s的有用信号强度
         H_self_P = np.zeros((self.S, self.K, self.L))
         for s in range(self.S):
             for k in range(self.K):
                 for l in range(self.L):
-                    H_self_P[s, k, l] = abs(h_matrix[s, k, k])**2 * P_fixed[l, s, k]
+                    H_self_P[s, k, l] = abs(h_matrix[s, k, k])**2 * P_virtual[l, s, k]
 
         Z_w_limit = 10 ** (self.config.Z_MAX_DBW / 10.0)
         K_G = getattr(self.config, 'K_G', [])
@@ -77,7 +80,7 @@ class OptimizationSolvers:
             for l in overlap_bands:
                 for s in range(self.S):
                     for k in range(self.K):
-                        coeff[s, k] += (abs(g_matrix[s, k_g, k])**2) * P_fixed[l, s, k]
+                        coeff[s, k] += (abs(g_matrix[s, k_g, k])**2) * P_virtual[l, s, k]
             GSO_coeffs.append(coeff)
             
         F_best = F_prev.copy()
@@ -169,9 +172,11 @@ class OptimizationSolvers:
 
     def solve_P_SCA(self, F_fixed, P_prev, B_fixed, h_matrix, g_matrix, Q_lengths):
         ''' Algorithm 3: SCA for Power '''
+        # 约束13e
         P_var = cp.Variable((self.L, self.S, self.K), nonneg=True)
         constraints = []
         for s in range(self.S):
+            # 约束13f
             constraints += [cp.sum(P_var[:, s, :]) <= self.config.MAX_POWER_PER_SAT]
             
         Z_w_limit = 10 ** (self.config.Z_MAX_DBW / 10.0)
@@ -187,6 +192,7 @@ class OptimizationSolvers:
                         # g_matrix 维度为 [S, K, K], k_g为受干扰GSO所在小区，k为发射目标小区
                         Z_gk = (abs(g_matrix[s, k_g, k])**2) * P_var[l, s, k] * F_fixed[s, k]
                         interference_to_gso += Z_gk
+                # 约束13g，但存在问题
                 constraints += [interference_to_gso <= Z_w_limit]
 
         expected_rates = np.zeros((self.S, self.K))
@@ -208,6 +214,8 @@ class OptimizationSolvers:
                     rate_expr += Q_lengths[s, k] * (coeff * P_var[l, s, k]) * F_fixed[s, k]
                     energy_expr += P_var[l, s, k] * self.config.TIME_SLOT_DURATION
 
+        # rate_expr 表示论文最小化目标式19第一项中q_sk*x_sk这一项，仅表示这一项是因为固定F、B时其他项为定值，最小化目标中仅剩余此项需要优化
+        # energy_expr 表示论文最小化目标式19第二项中卫星与地面波束能量消耗项，仅表示这一项是因为固定F、B时星间链路耗能为定值
         objective = cp.Minimize(-rate_expr / self.config.L_0 + (self.config.V / self.config.E_0) * energy_expr)
         prob = cp.Problem(objective, constraints)
         try:

@@ -4,56 +4,62 @@ import time
 
 from config import Config
 from env.satellite_network import SatelliteNetworkEnv
-from utils.plotter import plot_simulation_results, plot_beam_power_heatmap
+from utils.plotter import plot_simulation_results, plot_beam_power_heatmap, plot_beam_selection_heatmap
 from algorithms.proposed_algo import ProposedAlgorithm
 
-def bcd_optimization_placeholder(env, config, h_matrix, g_matrix):
+def bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=None, P_in=None, B_in=None):
     '''
     这是一个用于替代完整 BCD(MPMM + SCA + 二次规划) 求解的启发式/随机占位函数。
     在 algorithms/solvers.py 尚未实现和引入之前，用来验证系统闭环运转。
-    它将返回形状符合预期的 F, P, B 张量。
+    当提供 F_in, P_in, B_in 时，将直接使用；否则基于逻辑进行生成（例如 P, B 根据生效的 F 限定生成）。
     '''
     S = config.NUM_SATELLITES
     K = config.NUM_CELLS
     L = config.NUM_FREQUENCY_SEGMENTS
     
-    # 随机生成一个合理的跳波束策略图 F (S x K) - 每颗卫星随机在其覆盖小区(OMEGA_S)内选 Nb 个波束服务
-    F_pattern = np.zeros((S, K))
-    for s in range(S):
-        available_cells = config.OMEGA_S[s]
-        num_to_choose = min(config.NUM_BEAMS_PER_SAT, len(available_cells))
-        if num_to_choose > 0:
-            chosen_cells = np.random.choice(available_cells, num_to_choose, replace=False)
-            F_pattern[s, chosen_cells] = 1.0
+    # 1. 确定 F_pattern: 若存在输入则直接复制，否则由于受限于区域覆盖，随机生成
+    if F_in is not None:
+        F_pattern = F_in.copy()
+    else:
+        F_pattern = np.zeros((S, K))
+        for s in range(S):
+            available_cells = config.OMEGA_S[s]
+            num_to_choose = min(config.NUM_BEAMS_PER_SAT, len(available_cells))
+            if num_to_choose > 0:
+                chosen_cells = np.random.choice(available_cells, num_to_choose, replace=False)
+                F_pattern[s, chosen_cells] = 1.0
         
-    # 随机生成符合功率上限的功率分配矩阵 P (L x S x K)
-    P_matrix = np.random.uniform(6.0, 10.0, (L, S, K))
-    # 仅向 F 限定的波束注入功率
-    for s in range(S):
-        for k in range(K):
-            if F_pattern[s, k] == 0.0:
-                P_matrix[:, s, k] = 0.0
-            else:
-                # 简单归一化，保证满足 MAX_POWER_PER_SAT 约束
-                p_sum = np.sum(P_matrix[:, s, k])
-                if p_sum > config.MAX_POWER_PER_SAT / config.NUM_BEAMS_PER_SAT:
-                    scaling = (config.MAX_POWER_PER_SAT / config.NUM_BEAMS_PER_SAT) / p_sum
-                    P_matrix[:, s, k] *= scaling
-                    
-    # 随机生成少量的负载转移张量 B (S x S x K)
-    B_tensor = np.zeros((S, S, K))
-    for s in range(S):
-        for k in range(K):
-            if F_pattern[s, k] == 1.0:  # 只有当 s 分配到了服务 k 的任务，才有可能需要把多余负载转给别人
-                # 选择同属可服务第k个小区的 LEO 卫星集合 PHI_K 的其他卫星作为接收方
-                phi_k = config.PHI_K[k]
-                available_receivers = [x for x in phi_k if x != s]
-                
-                if available_receivers:  # 如果存在可用的接收卫星
-                    r = np.random.choice(available_receivers)
-                    val = np.random.uniform(0.0, 5.0)
-                    B_tensor[s, r, k] = -val  # s给r发，s流出为负
-                    B_tensor[r, s, k] = val   # r接收，r流入为正
+    # 2. 确定 P_matrix: 若存在输入则直接复制，否则给生效的 F 随机分配并归一化
+    if P_in is not None:
+        P_matrix = P_in.copy()
+    else:
+        P_matrix = np.random.uniform(6.0, 10.0, (L, S, K))
+        # 仅向当前 F_pattern 限定的波束注入功率
+        for s in range(S):
+            for k in range(K):
+                if F_pattern[s, k] == 0.0:
+                    P_matrix[:, s, k] = 0.0
+                else:
+                    p_sum = np.sum(P_matrix[:, s, k])
+                    if p_sum > config.MAX_POWER_PER_SAT / config.NUM_BEAMS_PER_SAT:
+                        scaling = (config.MAX_POWER_PER_SAT / config.NUM_BEAMS_PER_SAT) / p_sum
+                        P_matrix[:, s, k] *= scaling
+                        
+    # 3. 确定 B_tensor: 若存在输入则直接复制，否则在生效的 F 上构建负载均衡跳转
+    if B_in is not None:
+        B_tensor = B_in.copy()
+    else:
+        B_tensor = np.zeros((S, S, K))
+        for s in range(S):
+            for k in range(K):
+                if F_pattern[s, k] == 1.0: 
+                    phi_k = config.PHI_K[k]
+                    available_receivers = [x for x in phi_k if x != s]
+                    if available_receivers:
+                        r = np.random.choice(available_receivers)
+                        val = np.random.uniform(0.0, 5.0)
+                        B_tensor[s, r, k] = -val
+                        B_tensor[r, s, k] = val
     
     return F_pattern, P_matrix, B_tensor
 
@@ -81,6 +87,7 @@ def main():
     
     # 用于收集卫星0的历史功率矩阵以供热力图绘制
     p_history_sat0 = []
+    f_history_sat0 = []
     
     # 2. 模拟时隙循环开始 (指标由 env.history_metrics 统一管理)
     for n in range(config.MAX_TIME_SLOTS):
@@ -89,18 +96,19 @@ def main():
         
         # (b) 进行联合求解策略计算：BCD 优化获取 F[n], P[n], B[n] 
         # 使用真实的 BCD 交替优化算法求解 (保留原 placeholder 用于对比/备份)
-        F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        # F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
         # F_opt, P_opt, B_opt = algo.step(h_matrix, g_matrix, env.queue_lengths)
 
         # 此处先使用 placeholder 生成的 P_opt 和 B_opt，单独测试 MPMM 算法对 F 的优化效果
-        # _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
-        # F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, P_opt, B_opt, h_matrix, g_matrix, env.queue_lengths)
-        # algo.F_prev = F_opt
+        _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=algo.F_prev)
+        F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, P_opt, B_opt, h_matrix, g_matrix, env.queue_lengths)
+        algo.F_prev = F_opt
         
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
         step_metrics = env.step(F_opt, P_opt, B_opt)
         if n < 50:
             p_history_sat0.append(P_opt.copy())
+            f_history_sat0.append(F_opt.copy())
         
         # 屏幕显示进度
         if (n + 1) % 1 == 0:
@@ -135,6 +143,7 @@ def main():
     plot_simulation_results(env.history_metrics, config)
     if len(p_history_sat0) > 0:
         plot_beam_power_heatmap(p_history_sat0, config)
+        plot_beam_selection_heatmap(f_history_sat0, config)
     print('[INFO] Done.')
     
 if __name__ == '__main__':

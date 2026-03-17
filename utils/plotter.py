@@ -97,3 +97,64 @@ def plot_beam_power_heatmap(p_history_sat0, config):
     plt.savefig('仿真结果/beam_power_heatmap_sat0.png', dpi=300)
     plt.close()
     
+
+def plot_beam_selection_heatmap(f_history_sat0, config):
+    '''
+    绘制二维表格的热力图，大小为19*50。
+    用于表示第一个卫星在前50个时隙中对覆盖范围内19个小区波束的选择情况。
+    横坐标: 50个时隙 (前50个)
+    纵坐标: 第一个卫星覆盖内的19个小区编号
+    选择的小区涂为红色，未选择的为白色。
+    '''
+    import matplotlib.colors as mcolors
+    # 取出卫星0覆盖的19个小区编号
+    cells_sat0 = config.OMEGA_S[0]
+    
+    # 时隙数限制为最大50
+    num_slots = min(50, len(f_history_sat0))
+    if num_slots == 0:
+        return
+        
+    # 初始化热力图数据矩阵 (19 x num_slots)
+    heatmap_data = np.zeros((len(cells_sat0), num_slots))
+    
+    # 填充热力图数据
+    for n in range(num_slots):
+        # F_matrix_n 形如 (S, K)，表示该时隙下所有卫星和各小区连接状态
+        F_matrix_n = f_history_sat0[n] 
+        for idx, k in enumerate(cells_sat0):
+            # 将 F_matrix_n 中该小区状态 (1.0 联通 或 0.0 断开) 赋值给绘图数据
+            heatmap_data[idx, n] = F_matrix_n[0, k]
+            
+    # 设置画布大小
+    plt.figure(figsize=(14, 8))
+    
+    # 自定义颜色映射：0.0 对应白色(未选择)，1.0 对应红色(选择)
+    cmap = mcolors.ListedColormap(['white', 'red'])
+    
+    # 绘制热力图并去掉默认的值渐变刻度条 cbar (因为只有0和1)
+    ax = sns.heatmap(
+        heatmap_data, 
+        cmap=cmap, 
+        linewidths=.5, 
+        linecolor='lightgray', 
+        cbar=False
+    )
+    
+    # 设置标题与坐标轴标签
+    ax.set_title('Beam Selection Heatmap for Satellite 0')
+    ax.set_xlabel('Time Slots (1 to 50)')
+    ax.set_ylabel('Cell Index in Coverage Area (1 to 19)')
+    
+    # 设置Y轴刻度：显示具体的小区编号，旋转0度保证横向易读
+    ax.set_yticks(np.arange(len(cells_sat0)) + 0.5)
+    ax.set_yticklabels([f"Cell {k}" for k in cells_sat0], rotation=0)
+    
+    # 设置X轴刻度：显示时隙编号，每5个时隙作为一个刻度以防数字重叠拥挤
+    ax.set_xticks(np.arange(0, num_slots, 5) + 0.5)
+    ax.set_xticklabels(np.arange(1, num_slots + 1, 5), rotation=0)
+    
+    # 调整布局缩进并保存图片
+    plt.tight_layout()
+    plt.savefig('仿真结果/beam_selection_heatmap_sat0.png', dpi=300)
+    plt.close()
