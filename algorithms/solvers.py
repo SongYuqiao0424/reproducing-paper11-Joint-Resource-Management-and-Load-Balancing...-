@@ -28,9 +28,11 @@ class OptimizationSolvers:
     def solve_F_MPMM(self, F_prev, P_fixed, B_fixed, h_matrix, g_matrix, Q_lengths):
         """ Algorithm 2: MPMM for F Matrix """
         F_var = cp.Variable((self.S, self.K), nonneg=True)
-        alpha = np.ones((self.S, self.K)) * (0.1 / self.config.L_0)     # 拉格朗日乘子系数
-        beta = 0.5 / self.config.L_0                                    # 惩罚函数系数
-        rho = 1.1                                                       # 惩罚函数更新速率
+        # 放大惩罚因子避免陷入0.5陷阱。
+        base_penalty = 1.0  # 正常比例尺
+        alpha = np.ones((self.S, self.K)) * (base_penalty * 0.1)     # 拉格朗日乘子系数
+        beta = base_penalty * 0.5                                    # 惩罚函数系数
+        rho = 1.5                                                    # 惩罚函数更新速率加快
         Theta_rounds = getattr(self.config, 'MPMM_THETA_ROUNDS', 5)
         
         # 预先计算此时隙负载均衡调整后的临时队列限制 Q_temp (考虑到此时B矩阵被固定，计算先验排队长度d_sk)
@@ -99,8 +101,10 @@ class OptimizationSolvers:
             
             # 引入真实传输变量 X_var (体现原论文式31中的辅助变量转换，以及式32a中对每个链路的约束)
             X_var = cp.Variable((self.S, self.K))
-            # constraints += [X_var <= Q_temp] 
-            constraints += [X_var <= cp.multiply(Q_temp, F_var)]
+            # 约束 13l
+            constraints += [X_var <= Q_temp] 
+            # 耦合队列长度与波束选择，进行单独验证，后续进行删除
+            # constraints += [X_var <= cp.multiply(Q_temp, F_var)]
 
             # 式1的I_skl计算
             I_fixed = np.zeros((self.S, self.K, self.L))
@@ -124,7 +128,9 @@ class OptimizationSolvers:
             
             # 计算式31中除了I_var（包括F_var的I）其他项
             Term1_sum = np.sum(W_band * term1, axis=2)                   
-            Noise_sum = np.sum(W_band * term2_coeff * noise, axis=2)     
+            Noise_sum = np.sum(W_band * term2_coeff * noise, axis=2)
+            if _ == 0:
+                print(f"        [Debug] Term1_sum max: {np.max(Term1_sum):.2e}, Noise_sum max: {np.max(Noise_sum):.2e}")
 
             for s in range(self.S):
                 for k in range(self.K):
@@ -133,29 +139,41 @@ class OptimizationSolvers:
                         constraints += [X_var[s, k] == 0]
                         continue
                     # 结合式1计算式31中I_var，并得到surrogate_R_sk
-                    # W_term = W_band * term2_coeff[s, k, :]               
-                    # weight_sk = np.sum(HP[k, :, :, :] * W_term, axis=-1) 
-                    # weight_sk[s, k] = 0.0 
-                    # surrogate_R_sk = Term1_sum[s, k] * F_var[s, k] - Noise_sum[s, k] - cp.sum(cp.multiply(weight_sk, F_var))
-                    # rate_sk_bound = surrogate_R_sk * time_scale
-                    # constraints += [X_var[s, k] <= rate_sk_bound]
-                    # constraints += [X_var[s, k] <= rate_sk_bound + slack_var[s, k]]
+                    W_term = W_band * term2_coeff[s, k, :]               
+                    weight_sk = np.sum(HP[k, :, :, :] * W_term, axis=-1) 
+                    weight_sk[s, k] = 0.0 
+
+                    # 采用双变量 F * I_var 的一阶逼近泰勒展开，并严格把 Noise 与 Term1 均与 F_var 绑定
+                    # I_at_best = np.sum(weight_sk * F_best) # 标量估值
+                    # I_var = cp.sum(cp.multiply(weight_sk, F_var)) # 动态干扰
+                    # F_I_approx = F_var[s, k] * I_at_best + F_best[s, k] * I_var - F_best[s, k] * I_at_best
+                    
+                    # 彻底耦合：使得当 F_var 为 0 时，容量限制严格等于 0 而非负数
+                    # surrogate_R_sk = Term1_sum[s, k] * F_var[s, k] - Noise_sum[s, k] * F_var[s, k] - F_I_approx
+                    surrogate_R_sk = Term1_sum[s, k] * F_var[s, k] - Noise_sum[s, k] * F_var[s, k] - cp.sum(cp.multiply(weight_sk, F_var))
+
+                    rate_sk_bound = surrogate_R_sk * time_scale
+                    constraints += [X_var[s, k] <= rate_sk_bound]
+                    
             
             # utility_surrogate 表示论文最小化目标式19中q_sk*x_sk这一项，仅表示这一项是因为固定P、B时其他项为定值，最小化目标中仅剩余此项需要优化
             utility_surrogate = cp.sum(cp.multiply(Q_lengths, X_var))  
             
             # J_mp 即对应式(29)完整展开项，内部已包含 alpha 和 beta 相关惩罚
-            objective = cp.Minimize(-utility_surrogate / self.config.L_0 + J_mp)
+            # 直接取消对效用函数的极端阻尼(/L_0)，让目标函数处于合理的数值范围，这是导致 solver 不精确的根本原因
+            objective = cp.Minimize(-utility_surrogate / np.max([1.0, np.max(Q_lengths)]) + J_mp)
             
             prob = cp.Problem(objective, constraints)
             try:
-                prob.solve(solver=cp.SCS, warm_start=True)
+                prob.solve(solver=cp.SCS, warm_start=True, max_iters=5000, eps=1e-4)
                 if F_var.value is not None:
                     F_best = F_var.value
                     x_val = X_var.value
                     x_sum = np.sum(x_val) if x_val is not None else -10
                     x_max = np.max(x_val) if x_val is not None else -10
-                    print(f"        [Theta {_}] Current F_best sum: {np.sum(F_best):.2f}, Max Val: {np.max(F_best):.2f} | X_var sum: {x_sum:.2f}, Max: {x_max:.2f}")
+                    print(f"        [Theta {_}] Current F_best sum: {np.sum(F_best):.2f}, Max Val: {np.max(F_best):.2f} | X_var sum: {x_sum:.4f}, Max: {x_max:.4f}")
+                    print(f"        [Theta {_}] Sat0 F_best: {np.array2string(np.round(F_best[0, :19],2), separator=',', max_line_width=200)}")
+                    print(f"        [Theta {_}] Sat0 X_var : {np.array2string(np.round(x_val[0, :19],2), separator=',', max_line_width=200) if x_val is not None else 'None'}")   
                     alpha += 2 * beta * F_best * (1 - F_best)
                     beta *= rho
                 else:
@@ -280,3 +298,4 @@ class OptimizationSolvers:
              B_res = np.zeros((self.S, self.S, self.K))
              
         return B_res
+

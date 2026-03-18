@@ -62,8 +62,8 @@ class ChannelModel:
         distance: 卫星与地面小区之间的距离 (m)
         tx_theta: 发射天线偏离波束中心的角度 (度)
         rx_theta: 接收天线偏离波束中心的角度 (度)
-        计算信道系数 |h|^2 
-        h^2 = (G_tx * G_rx) / P_loss
+        计算信道系数幅度 |h|
+        |h| = sqrt((G_tx * G_rx) / P_loss)
         '''
         # 计算自由空间路径损耗 (线性)
         path_loss_linear = self.calculate_free_space_path_loss(distance, self.config.CARRIER_FREQ)
@@ -72,9 +72,11 @@ class ChannelModel:
         g_tx = self.get_tx_antenna_gain(tx_theta)
         g_rx = self.get_rx_antenna_gain(rx_theta)
         
-        # 信道系数平方
+        # 信道系数功率
         h_squared = (g_tx * g_rx) / path_loss_linear
-        return h_squared
+        
+        # 返回幅度
+        return math.sqrt(h_squared)
 
     def generate_random_channel_matrices(self):
         '''
@@ -88,10 +90,10 @@ class ChannelModel:
         K = self.config.NUM_CELLS
         
         
-        # 假设高度导致的基线损耗在 -150dB 左右 (10^(-15))，波束对准时增益高一点，不对准衰减大
-        # 这是一个随机近似函数供算法测试使用，后续可以换为真实的轨道追踪计算
-        base_h = 1e-15 
-        base_g = 1e-16  # GSO站受到的底噪略低
+        # 假设高度导致的功率路径损耗在 -150dB 左右 (10^(-15))
+        # 由于优化算法(solvers)中会进行 |h|^2 和 |g|^2 的计算，这里必须返回信道的幅度(开根号)
+        base_h_amp = math.sqrt(1e-15) 
+        base_g_amp = math.sqrt(1e-16)  # GSO站受到的底噪扰动略低
         
         H = np.zeros((S, K, K))
         G_matrix = np.zeros((S, K, K))
@@ -100,23 +102,23 @@ class ChannelModel:
             for k in range(K):
                 for j in range(K):
                     if k == j:
-                        # 指向当前小区 k，增益最大
-                        H[s, k, j] = base_h * np.random.uniform(0.8, 1.2)
+                        # 指向当前小区 k，增益最大，幅度浮动范围相应开根号约 (0.9 ~ 1.1)
+                        H[s, k, j] = base_h_amp * np.random.uniform(0.9, 1.1)
                     else:
-                        # 指向其他小区 j 对 k 造成的相邻波束干扰
-                        dist_factor = np.random.uniform(0.01, 0.1) # 旁瓣衰减
-                        H[s, k, j] = base_h * dist_factor
+                        # 指向其他小区 j 对 k 造成的相邻波束干扰，原功率衰减 10~100倍，对应幅度衰减 √(0.01)~√(0.1) 即 0.1~0.316
+                        dist_factor_amp = np.random.uniform(0.1, 0.316) 
+                        H[s, k, j] = base_h_amp * dist_factor_amp
         
         for s in range(S):
             for k in range(K):
                 for j in range(K):
                     if k == j:
                         # 目标波束指向 j 与 GSO 所在小区 k 一致，GSO受到主瓣干扰，增益较大
-                        G_matrix[s, k, j] = base_g * np.random.uniform(0.8, 1.2)
+                        G_matrix[s, k, j] = base_g_amp * np.random.uniform(0.9, 1.1)
                     else:
                         # 指向其他小区 j 时，对 k 处的 GSO 造成旁瓣干扰，增益较小
-                        dist_factor = np.random.uniform(0.01, 0.1)
-                        G_matrix[s, k, j] = base_g * dist_factor
+                        dist_factor_amp = np.random.uniform(0.1, 0.316)
+                        G_matrix[s, k, j] = base_g_amp * dist_factor_amp
                     
         return H, G_matrix
 
