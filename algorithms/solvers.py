@@ -28,7 +28,7 @@ class OptimizationSolvers:
     def solve_F_MPMM(self, F_prev, P_fixed, B_fixed, h_matrix, g_matrix, Q_lengths):
         """ Algorithm 2: MPMM for F Matrix """
         F_var = cp.Variable((self.S, self.K), nonneg=True)
-        # 放大惩罚因子避免陷入0.5陷阱。
+        # 提高了惩罚项J的系数α、β、ρ的值,避免陷入0.5陷阱,确保F值接近0/1；
         base_penalty = 1.0  # 正常比例尺
         alpha = np.ones((self.S, self.K)) * (base_penalty * 0.1)     # 拉格朗日乘子系数
         beta = base_penalty * 0.5                                    # 惩罚函数系数
@@ -103,8 +103,6 @@ class OptimizationSolvers:
             X_var = cp.Variable((self.S, self.K))
             # 约束 13l
             constraints += [X_var <= Q_temp] 
-            # 耦合队列长度与波束选择，进行单独验证，后续进行删除
-            # constraints += [X_var <= cp.multiply(Q_temp, F_var)]
 
             # 式1的I_skl计算
             I_fixed = np.zeros((self.S, self.K, self.L))
@@ -150,7 +148,7 @@ class OptimizationSolvers:
                     
                     # 彻底耦合：使得当 F_var 为 0 时，容量限制严格等于 0 而非负数
                     # surrogate_R_sk = Term1_sum[s, k] * F_var[s, k] - Noise_sum[s, k] * F_var[s, k] - F_I_approx
-                    surrogate_R_sk = Term1_sum[s, k] * F_var[s, k] - Noise_sum[s, k] * F_var[s, k] - cp.sum(cp.multiply(weight_sk, F_var))
+                    surrogate_R_sk = Term1_sum[s, k] * F_var[s, k] - Noise_sum[s, k] - cp.sum(cp.multiply(weight_sk, F_var))
 
                     rate_sk_bound = surrogate_R_sk * time_scale
                     constraints += [X_var[s, k] <= rate_sk_bound]
@@ -160,12 +158,18 @@ class OptimizationSolvers:
             utility_surrogate = cp.sum(cp.multiply(Q_lengths, X_var))  
             
             # J_mp 即对应式(29)完整展开项，内部已包含 alpha 和 beta 相关惩罚
-            # 直接取消对效用函数的极端阻尼(/L_0)，让目标函数处于合理的数值范围，这是导致 solver 不精确的根本原因
-            objective = cp.Minimize(-utility_surrogate / np.max([1.0, np.max(Q_lengths)]) + J_mp)
+            # 修改主优化目标函数utility_surrogate的均衡系数，让目标函数处于合理的数值范围，这是导致 solver 不精确的根本原因
+            # objective = cp.Minimize(-utility_surrogate / np.max([1.0, np.max(Q_lengths)]) + J_mp)
+            objective = cp.Minimize(-utility_surrogate / self.config.L_0 + J_mp)
             
             prob = cp.Problem(objective, constraints)
             try:
-                prob.solve(solver=cp.SCS, warm_start=True, max_iters=5000, eps=1e-4)
+                # prob.solve(solver=cp.SCS, warm_start=True)
+                # 迭代次数影响求解的精度，迭代次数较多时，精度较高，但仿真时间会过长;
+                # 迭代次数较少时,可能未到达最优解,比如此时每个卫星的波束激活量sum(F_best[s,:])不小于等于NUM_BEAMS_PER_SAT(不满足约束13d)
+                # 也有可能单个波束选择值F_best[s,k]未迭代至0/1;但是只要求解到可行解附近时即可判断出应该激活的卫星波束.
+                prob.solve(solver=cp.SCS, warm_start=True, max_iters=10000, eps=1e-4)
+                # prob.solve(solver=cp.SCS, warm_start=True, max_iters=10000, eps=1e-4)
                 if F_var.value is not None:
                     F_best = F_var.value
                     x_val = X_var.value
