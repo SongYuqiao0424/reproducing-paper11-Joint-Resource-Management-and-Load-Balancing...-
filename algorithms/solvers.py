@@ -34,6 +34,7 @@ class OptimizationSolvers:
         beta = base_penalty * 0.5                                    # 惩罚函数系数
         rho = 1.5                                                    # 惩罚函数更新速率加快
         Theta_rounds = getattr(self.config, 'MPMM_THETA_ROUNDS', 5)
+        Psi_rounds = getattr(self.config, 'MPMM_PSI_ROUNDS', 5)
         
         # 预先计算此时隙负载均衡调整后的临时队列限制 Q_temp (考虑到此时B矩阵被固定，计算先验排队长度d_sk)
         d_sk = np.zeros((self.S, self.K))
@@ -86,104 +87,97 @@ class OptimizationSolvers:
             GSO_coeffs.append(coeff)
             
         F_best = F_prev.copy()
-        for _ in range(Theta_rounds):
-            # 约束13c
-            constraints = [F_var <= valid_mask]  
-            for s in range(self.S):
-                # 约束13d
-                constraints += [cp.sum(F_var[s, :]) <= self.config.NUM_BEAMS_PER_SAT]   
-            for coeff in GSO_coeffs:
-                # 约束13g
-                constraints += [cp.sum(cp.multiply(coeff, F_var)) <= Z_w_limit] 
+        for theta in range(Theta_rounds):
+            F_ref = F_best.copy()
+            for psi in range(Psi_rounds):
+                # 约束13c
+                constraints = [F_var <= valid_mask]
+                for s in range(self.S):
+                    # 约束13d
+                    constraints += [cp.sum(F_var[s, :]) <= self.config.NUM_BEAMS_PER_SAT]
+                for coeff in GSO_coeffs:
+                    # 约束13g
+                    constraints += [cp.sum(cp.multiply(coeff, F_var)) <= Z_w_limit]
 
-            f_surrogate = cp.multiply(1 - 2 * F_best, F_var) + F_best**2
-            J_mp = cp.sum(cp.multiply(alpha, f_surrogate)) + beta * cp.sum(cp.square(f_surrogate))
-            
-            # 引入真实传输变量 X_var (体现原论文式31中的辅助变量转换，以及式32a中对每个链路的约束)
-            X_var = cp.Variable((self.S, self.K))
-            # 约束 13l
-            constraints += [X_var <= Q_temp] 
+                f_surrogate = cp.multiply(1 - 2 * F_ref, F_var) + F_ref**2
+                J_mp = cp.sum(cp.multiply(alpha, f_surrogate)) + beta * cp.sum(cp.square(f_surrogate))
 
-            # 式1的I_skl计算
-            I_fixed = np.zeros((self.S, self.K, self.L))
-            for k in range(self.K):
-                # 直接计算小区k受到PHI_K内所有卫星的信号总和，包括了干扰和有用信号，再减去有用信号得到总干扰
-                total_I_k = np.zeros(self.L)
-                for s_idx in self.config.PHI_K[k]:
-                    for k_idx in range(self.K):
-                        total_I_k += HP[k, s_idx, k_idx, :] * F_best[s_idx, k_idx]
-                for s in self.config.PHI_K[k]:
-                    I_fixed[s, k, :] = np.maximum(0, total_I_k - HP[k, s, k, :] * F_best[s, k])
+                # 引入真实传输变量 X_var (体现原论文式31中的辅助变量转换，以及式32a中对每个链路的约束)
+                X_var = cp.Variable((self.S, self.K))
+                # 约束 13l
+                constraints += [X_var <= Q_temp]
 
-            # 式30a、30b，矩阵形式计算，计算每个小区k在频段l上，来自卫星s的相关参数
-            gamma_best = H_self_P / (noise + I_fixed + 1e-12)
-            phi_best = gamma_best / (1 + gamma_best)
-            zeta_best = np.log2(1 + gamma_best) - phi_best * np.log2(gamma_best + 1e-12)
-
-            log2_e = np.log2(np.e)
-            term1 = phi_best * np.log2(np.e * gamma_best + 1e-12) + zeta_best
-            term2_coeff = log2_e * phi_best * gamma_best / (H_self_P + 1e-12)
-            
-            # 计算式31中除了I_var（包括F_var的I）其他项
-            Term1_sum = np.sum(W_band * term1, axis=2)                   
-            Noise_sum = np.sum(W_band * term2_coeff * noise, axis=2)
-            if _ == 0:
-                print(f"        [Debug] Term1_sum max: {np.max(Term1_sum):.2e}, Noise_sum max: {np.max(Noise_sum):.2e}")
-
-            for s in range(self.S):
+                # 式1的I_skl计算
+                I_fixed = np.zeros((self.S, self.K, self.L))
                 for k in range(self.K):
-                    if valid_mask[s, k] == 0:
-                        # 如果这个卫星-小区对不合法，直接约束X_var为0，并跳过后续计算
-                        constraints += [X_var[s, k] == 0]
-                        continue
-                    # 结合式1计算式31中I_var，并得到surrogate_R_sk
-                    W_term = W_band * term2_coeff[s, k, :]               
-                    weight_sk = np.sum(HP[k, :, :, :] * W_term, axis=-1) 
-                    weight_sk[s, k] = 0.0 
+                    # 直接计算小区k受到PHI_K内所有卫星的信号总和，包括了干扰和有用信号，再减去有用信号得到总干扰
+                    total_I_k = np.zeros(self.L)
+                    for s_idx in self.config.PHI_K[k]:
+                        for k_idx in range(self.K):
+                            total_I_k += HP[k, s_idx, k_idx, :] * F_ref[s_idx, k_idx]
+                    for s in self.config.PHI_K[k]:
+                        I_fixed[s, k, :] = np.maximum(0, total_I_k - HP[k, s, k, :] * F_ref[s, k])
 
-                    # 采用双变量 F * I_var 的一阶逼近泰勒展开，并严格把 Noise 与 Term1 均与 F_var 绑定
-                    # I_at_best = np.sum(weight_sk * F_best) # 标量估值
-                    # I_var = cp.sum(cp.multiply(weight_sk, F_var)) # 动态干扰
-                    # F_I_approx = F_var[s, k] * I_at_best + F_best[s, k] * I_var - F_best[s, k] * I_at_best
-                    
-                    # 彻底耦合：使得当 F_var 为 0 时，容量限制严格等于 0 而非负数
-                    # surrogate_R_sk = Term1_sum[s, k] * F_var[s, k] - Noise_sum[s, k] * F_var[s, k] - F_I_approx
-                    surrogate_R_sk = Term1_sum[s, k] * F_var[s, k] - Noise_sum[s, k] - cp.sum(cp.multiply(weight_sk, F_var))
+                # 式30a、30b，矩阵形式计算，计算每个小区k在频段l上，来自卫星s的相关参数
+                gamma_best = H_self_P / (noise + I_fixed + 1e-12)
+                phi_best = gamma_best / (1 + gamma_best)
+                zeta_best = np.log2(1 + gamma_best) - phi_best * np.log2(gamma_best + 1e-12)
 
-                    rate_sk_bound = surrogate_R_sk * time_scale
-                    constraints += [X_var[s, k] <= rate_sk_bound]
-                    
-            
-            # utility_surrogate 表示论文最小化目标式19中q_sk*x_sk这一项，仅表示这一项是因为固定P、B时其他项为定值，最小化目标中仅剩余此项需要优化
-            utility_surrogate = cp.sum(cp.multiply(Q_lengths, X_var))  
-            
-            # J_mp 即对应式(29)完整展开项，内部已包含 alpha 和 beta 相关惩罚
-            # 修改主优化目标函数utility_surrogate的均衡系数，让目标函数处于合理的数值范围，这是导致 solver 不精确的根本原因
-            # objective = cp.Minimize(-utility_surrogate / np.max([1.0, np.max(Q_lengths)]) + J_mp)
-            objective = cp.Minimize(-utility_surrogate / self.config.L_0 + J_mp)
-            
-            prob = cp.Problem(objective, constraints)
-            try:
-                # prob.solve(solver=cp.SCS, warm_start=True)
-                # 迭代次数影响求解的精度，迭代次数较多时，精度较高，但仿真时间会过长;
-                # 迭代次数较少时,可能未到达最优解,比如此时每个卫星的波束激活量sum(F_best[s,:])不小于等于NUM_BEAMS_PER_SAT(不满足约束13d)
-                # 也有可能单个波束选择值F_best[s,k]未迭代至0/1;但是只要求解到可行解附近时即可判断出应该激活的卫星波束.
-                prob.solve(solver=cp.SCS, warm_start=True, max_iters=10000, eps=1e-4)
-                # prob.solve(solver=cp.SCS, warm_start=True, max_iters=10000, eps=1e-4)
-                if F_var.value is not None:
-                    F_best = F_var.value
-                    x_val = X_var.value
-                    x_sum = np.sum(x_val) if x_val is not None else -10
-                    x_max = np.max(x_val) if x_val is not None else -10
-                    print(f"        [Theta {_}] Current F_best sum: {np.sum(F_best):.2f}, Max Val: {np.max(F_best):.2f} | X_var sum: {x_sum:.4f}, Max: {x_max:.4f}")
-                    print(f"        [Theta {_}] Sat0 F_best: {np.array2string(np.round(F_best[0, :19],2), separator=',', max_line_width=200)}")
-                    print(f"        [Theta {_}] Sat0 X_var : {np.array2string(np.round(x_val[0, :19],2), separator=',', max_line_width=200) if x_val is not None else 'None'}")   
-                    alpha += 2 * beta * F_best * (1 - F_best)
-                    beta *= rho
-                else:
+                log2_e = np.log2(np.e)
+                term1 = phi_best * np.log2(np.e * gamma_best + 1e-12) + zeta_best
+                term2_coeff = log2_e * phi_best * gamma_best / (H_self_P + 1e-12)
+
+                # 计算式31中除了I_var（包括F_var的I）其他项
+                Term1_sum = np.sum(W_band * term1, axis=2)
+                Noise_sum = np.sum(W_band * term2_coeff * noise, axis=2)
+                if theta == 0 and psi == 0:
+                    print(f"        [Debug] Term1_sum max: {np.max(Term1_sum):.2e}, Noise_sum max: {np.max(Noise_sum):.2e}")
+
+                for s in range(self.S):
+                    for k in range(self.K):
+                        if valid_mask[s, k] == 0:
+                            # 如果这个卫星-小区对不合法，直接约束X_var为0，并跳过后续计算
+                            constraints += [X_var[s, k] == 0]
+                            continue
+                        # 结合式1计算式31中I_var，并得到surrogate_R_sk
+                        W_term = W_band * term2_coeff[s, k, :]
+                        weight_sk = np.sum(HP[k, :, :, :] * W_term, axis=-1)
+                        weight_sk[s, k] = 0.0
+                        surrogate_R_sk = Term1_sum[s, k] * F_var[s, k] - Noise_sum[s, k] - cp.sum(cp.multiply(weight_sk, F_var))
+
+                        rate_sk_bound = surrogate_R_sk * time_scale
+                        constraints += [X_var[s, k] <= rate_sk_bound]
+
+                # utility_surrogate 表示论文最小化目标式19中q_sk*x_sk这一项，仅表示这一项是因为固定P、B时其他项为定值，最小化目标中仅剩余此项需要优化
+                utility_surrogate = cp.sum(cp.multiply(Q_lengths, X_var))
+
+                # J_mp 即对应式(29)完整展开项，内部已包含 alpha 和 beta 相关惩罚
+                # 修改主优化目标函数utility_surrogate的均衡系数，让目标函数处于合理的数值范围，这是导致 solver 不精确的根本原因
+                # objective = cp.Minimize(-utility_surrogate / np.max([1.0, np.max(Q_lengths)]) + J_mp)
+                objective = cp.Minimize(-utility_surrogate / self.config.L_0 + J_mp)
+
+                prob = cp.Problem(objective, constraints)
+                try:
+                    # 迭代次数影响求解的精度，迭代次数较多时，精度较高，但仿真时间会过长;
+                    # 迭代次数较少时,可能未到达最优解,比如此时每个卫星的波束激活量sum(F_best[s,:])不小于等于NUM_BEAMS_PER_SAT(不满足约束13d)
+                    # 也有可能单个波束选择值F_best[s,k]未迭代至0/1;但是只要求解到可行解附近时即可判断出应该激活的卫星波束.
+                    prob.solve(solver=cp.SCS, warm_start=True, max_iters=10000, eps=1e-4)
+                    if F_var.value is not None:
+                        F_ref = F_var.value
+                        x_val = X_var.value
+                        x_sum = np.sum(x_val) if x_val is not None else -10
+                        x_max = np.max(x_val) if x_val is not None else -10
+                        print(f"        [Theta {theta} Psi {psi}] Current F_ref sum: {np.sum(F_ref):.2f}, Max Val: {np.max(F_ref):.2f} | X_var sum: {x_sum:.4f}, Max: {x_max:.4f}")
+                        print(f"        [Theta {theta} Psi {psi}] Sat0 F_ref: {np.array2string(np.round(F_ref[0, :19],2), separator=',', max_line_width=200)}")
+                        print(f"        [Theta {theta} Psi {psi}] Sat0 X_var: {np.array2string(np.round(x_val[0, :19],2), separator=',', max_line_width=200) if x_val is not None else 'None'}")
+                    else:
+                        break
+                except Exception:
                     break
-            except Exception:
-                break
+
+            F_best = F_ref
+            alpha += 2 * beta * F_best * (1 - F_best)
+            beta *= rho
 
         F_quantized = np.zeros((self.S, self.K))
         for s in range(self.S):
@@ -195,62 +189,100 @@ class OptimizationSolvers:
 
     def solve_P_SCA(self, F_fixed, P_prev, B_fixed, h_matrix, g_matrix, Q_lengths):
         ''' Algorithm 3: SCA for Power '''
-        # 约束13e
-        P_var = cp.Variable((self.L, self.S, self.K), nonneg=True)
-        constraints = []
-        for s in range(self.S):
-            # 约束13f
-            constraints += [cp.sum(P_var[:, s, :]) <= self.config.MAX_POWER_PER_SAT]
-            
-        Z_w_limit = 10 ** (self.config.Z_MAX_DBW / 10.0)
-        K_G = getattr(self.config, 'K_G', [])
-        L_K = getattr(self.config, 'L_K', {})
-        for k_g in K_G:
-            overlap_bands = L_K.get(k_g, range(self.L))
-            interference_to_gso = 0
+        Xi_rounds = getattr(self.config, 'SCA_XI_ROUNDS', 5)
+        P_best = P_prev.copy()
+
+        for _ in range(Xi_rounds):
+            # 约束13e
+            P_var = cp.Variable((self.L, self.S, self.K), nonneg=True)
+            constraints = []
+            for s in range(self.S):
+                # 约束13f
+                constraints += [cp.sum(P_var[:, s, :]) <= self.config.MAX_POWER_PER_SAT]
                 
-            for l in overlap_bands:
-                for s in range(self.S):
-                    for k in range(self.K):
-                        # g_matrix 维度为 [S, K, K], k_g为受干扰GSO所在小区，k为发射目标小区
-                        Z_gk = (abs(g_matrix[s, k_g, k])**2) * P_var[l, s, k] * F_fixed[s, k]
-                        interference_to_gso += Z_gk
-                # 约束13g，但存在问题
+            Z_w_limit = 10 ** (self.config.Z_MAX_DBW / 10.0)
+            K_G = getattr(self.config, 'K_G', [])
+            L_K = getattr(self.config, 'L_K', {})
+            for k_g in K_G:
+                overlap_bands = L_K.get(k_g, range(self.L))
+                interference_to_gso = 0
+                    
+                for l in overlap_bands:
+                    for s in range(self.S):
+                        for k in range(self.K):
+                            # g_matrix 维度为 [S, K, K], k_g为受干扰GSO所在小区，k为发射目标小区
+                            Z_gk = (abs(g_matrix[s, k_g, k])**2) * P_var[l, s, k] * F_fixed[s, k]
+                            interference_to_gso += Z_gk
+                # 约束13g：对每个GSO地面站，累计所有重叠频段上的总干扰不超过门限
                 constraints += [interference_to_gso <= Z_w_limit]
 
-        expected_rates = np.zeros((self.S, self.K))
-        for s in range(self.S):
-            for k in range(self.K):
-                if F_fixed[s, k] > 0:
+            # 这里设置X_var为非负变量,但X_var<=surrogate_R_sk可能存在负的上界,可能需要修改
+            X_var = cp.Variable((self.S, self.K), nonneg=True)
+            noise = self.env.channel_model.noise_power * self.config.BANDWIDTH_PER_SEGMENT
+            log2_e = np.log2(np.e)
+            time_scale = self.config.TIME_SLOT_DURATION / self.config.PACKET_SIZE
+
+            # 基于式(35)(36)构造 R^P_{s,k}(P; P_hat), 其中 P_hat = 当前迭代点 P_best
+            for s in range(self.S):
+                for k in range(self.K):
+                    if F_fixed[s, k] <= 0:
+                        constraints += [X_var[s, k] == 0]
+                        continue
+
+                    h_self_sq = abs(h_matrix[s, k, k])**2
+                    if h_self_sq <= 1e-18:
+                        constraints += [X_var[s, k] == 0]
+                        continue
+
+                    # 基础干扰系数矩阵(对应小区k接收端)，后续对当前(s,k)去掉“自身有用项”
+                    base_coeff = np.zeros((self.S, self.K))
+                    for s_idx in self.config.PHI_K[k]:
+                        for k_idx in range(self.K):
+                            base_coeff[s_idx, k_idx] = abs(h_matrix[s_idx, k, k_idx])**2 * F_fixed[s_idx, k_idx]
+
+                    base_coeff[s, k] = 0.0
+                    surrogate_R_sk = 0
                     for l in range(self.L):
-                        I_skl = self._calculate_interference(P_prev, F_fixed, h_matrix, s, k, l)
-                        noise = self.env.channel_model.noise_power * self.config.BANDWIDTH_PER_SEGMENT
-                        gain_factor = abs(h_matrix[s, k, k])**2 / (noise + I_skl + 1e-15)
-                        expected_rates[s, k] += gain_factor * self.config.BANDWIDTH_PER_SEGMENT
+                        # I_{s,k,l}(P_hat)
+                        I_hat = np.sum(base_coeff * P_best[l, :, :])
 
-        rate_expr = 0
-        energy_expr = 0
-        for s in range(self.S):
-            for k in range(self.K):
-                for l in range(self.L):
-                    coeff = expected_rates[s,k] * (self.config.TIME_SLOT_DURATION / self.config.PACKET_SIZE)
-                    rate_expr += Q_lengths[s, k] * (coeff * P_var[l, s, k]) * F_fixed[s, k]
-                    energy_expr += P_var[l, s, k] * self.config.TIME_SLOT_DURATION
+                        # 式(35): eta 在 P_hat 处的取值；phi、zeta 由 gamma_hat 计算
+                        eta_hat = (h_self_sq * F_fixed[s, k]) / (noise + I_hat + 1e-15)
+                        gamma_hat = eta_hat * P_best[l, s, k]
+                        phi_hat = gamma_hat / (1.0 + gamma_hat)
+                        zeta_hat = np.log2(1.0 + gamma_hat) - phi_hat * np.log2(gamma_hat + 1e-15)
 
-        # rate_expr 表示论文最小化目标式19第一项中q_sk*x_sk这一项，仅表示这一项是因为固定F、B时其他项为定值，最小化目标中仅剩余此项需要优化
-        # energy_expr 表示论文最小化目标式19第二项中卫星与地面波束能量消耗项，仅表示这一项是因为固定F、B时星间链路耗能为定值
-        objective = cp.Minimize(-rate_expr / self.config.L_0 + (self.config.V / self.config.E_0) * energy_expr)
-        prob = cp.Problem(objective, constraints)
-        try:
-            prob.solve(solver=cp.SCS)
-        except Exception:
-            pass 
+                        # I_{s,k,l}(P): 关于 P_var 的仿射表达
+                        I_var = cp.sum(cp.multiply(base_coeff, P_var[l, :, :]))
 
-        P_new = P_prev.copy()
-        if P_var.value is not None:
-             P_new = np.clip(P_var.value, 0, None)
-             
-        return P_new
+                        # 式(36): 单频段近似速率项
+                        term_log = phi_hat * cp.log(np.e * eta_hat * P_var[l, s, k] + 1e-15) / np.log(2)
+                        term_affine = log2_e * (phi_hat * eta_hat) * ((noise + I_var) / (h_self_sq + 1e-15))
+                        surrogate_R_l = self.config.BANDWIDTH_PER_SEGMENT * (F_fixed[s, k] * (term_log + zeta_hat) - term_affine)
+                        surrogate_R_sk += surrogate_R_l
+
+                    # 约束37a: x_{s,k} * M0 <= R^P_{s,k}(P; P_hat) * T0
+                    constraints += [X_var[s, k] <= surrogate_R_sk * time_scale]
+
+            # 漂移项使用辅助变量 x_{s,k}
+            rate_expr = cp.sum(cp.multiply(Q_lengths, X_var))
+            energy_expr = cp.sum(P_var) * self.config.TIME_SLOT_DURATION
+
+            # rate_expr 表示论文最小化目标式19第一项中q_sk*x_sk这一项，仅表示这一项是因为固定F、B时其他项为定值，最小化目标中仅剩余此项需要优化
+            # energy_expr 表示论文最小化目标式19第二项中卫星与地面波束能量消耗项，仅表示这一项是因为固定F、B时星间链路耗能为定值
+            objective = cp.Minimize(-rate_expr / self.config.L_0 + (self.config.V / self.config.E_0) * energy_expr)
+            prob = cp.Problem(objective, constraints)
+            try:
+                prob.solve(solver=cp.SCS)
+            except Exception:
+                break
+
+            if P_var.value is not None:
+                P_best = np.clip(P_var.value, 0, None)
+            else:
+                break
+            
+        return P_best
 
     def solve_B_QP(self, F_fixed, P_fixed, B_prev, Q_lengths):
         ''' QP for Load Balancing Matrix '''

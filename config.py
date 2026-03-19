@@ -54,5 +54,5 @@ class Config:
     
     MAX_BCD_LOOPS = 5             
     MPMM_THETA_ROUNDS = 10        
-    MPMM_PSI_ROUNDS = 5           
+    MPMM_PSI_ROUNDS = 1           
     SCA_XI_ROUNDS = 5             
