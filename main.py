@@ -75,6 +75,9 @@ def main():
     
     # 实例化提议的BCD优化算法
     algo = ProposedAlgorithm(config, env)
+    # 初始化 F_prev, P_prev, B_prev 以供算法使用
+    h_matrix, g_matrix = env.channel_model.generate_random_channel_matrices()
+    algo.F_prev, algo.P_prev, algo.B_prev = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
     
     print(f'[INFO] Number of Satellites: {config.NUM_SATELLITES}')
     print(f'[INFO] Number of Beams per Sat: {config.NUM_BEAMS_PER_SAT}')
@@ -99,11 +102,17 @@ def main():
         # F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
         # F_opt, P_opt, B_opt = algo.step(h_matrix, g_matrix, env.queue_lengths)
 
-        # 此处先使用 placeholder 生成的 P_opt 和 B_opt，单独测试 MPMM 算法对 F 的优化效果
-        F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
-        _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt)
-        algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
+        # 单独测试 MPMM 算法对 F 的优化效果
+        # F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
+        # _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt)
+        # algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
         
+        # 单独测试 MPMM 算法对 P 的优化效果
+        F_opt, _, _ = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        P_opt = algo.solvers.solve_P_SCA(F_opt, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
+        _, _, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt, P_in=P_opt)
+        algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
+
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
         step_metrics = env.step(F_opt, P_opt, B_opt)
         if n < 50:
