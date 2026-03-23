@@ -210,6 +210,19 @@ class OptimizationSolvers:
         h_self_sq = np.abs(h_matrix[:, np.arange(self.K), np.arange(self.K)])**2
         active_link_mask = (F_fixed > 0) & (h_self_sq > 1e-18)
 
+        # 第一轮Xi采用虚拟参考功率，避免新激活链路在P_prev=0时线性化退化
+        P_virtual_ref = np.zeros_like(P_best)
+        for s in range(self.S):
+            # 计算当前卫星s的激活波束数量
+            active_k_idx = np.where(active_link_mask[s, :])[0]
+            active_count = len(active_k_idx)
+            if active_count == 0:
+                continue
+            # 均分初始参考功率
+            p_seed = self.config.MAX_POWER_PER_SAT / (active_count * self.L)
+            P_virtual_ref[:, s, active_k_idx] = p_seed
+        P_virtual_ref_flat = P_virtual_ref.reshape(self.L, sk_size)
+
         # 预计算接收信号的系数矩阵 base_coeff_by_k[k, s*K+k_idx],包括有用信号和干扰信号的系数
         base_coeff_by_k = np.zeros((self.K, sk_size))
         for k in range(self.K):
@@ -241,11 +254,14 @@ class OptimizationSolvers:
                 coeff_vec[s * self.K:(s + 1) * self.K] = np.abs(g_matrix[s, k_g, :])**2 * F_fixed[s, :]
             gso_constraints_data.append((overlap_bands, coeff_vec))
 
-        for _ in range(Xi_rounds):
+        for xi in range(Xi_rounds):
             # 约束13e: 使用二维变量减少CVXPY高维表达式构建开销
             P_var = cp.Variable((self.L, sk_size), nonneg=True)
             X_var = cp.Variable((self.S, self.K), nonneg=True)
             constraints = []
+
+            # 仅第一轮使用虚拟参考点，后续轮次使用上一轮解
+            P_ref_flat = P_virtual_ref_flat if xi == 0 else P_best_flat
 
             for s in range(self.S):
                 # 约束13f
@@ -270,12 +286,12 @@ class OptimizationSolvers:
             # 基于式(35)(36)构造 R^P_{s,k}(P; P_hat), 其中 P_hat = 当前迭代点 P_best
             for s in range(self.S):
                 for k in range(self.K):
+                    idx_sk = s * self.K + k
                     if not active_link_mask[s, k]:
                         # 约束13k的一部分：对于非激活链路，直接约束X_var为0
                         constraints += [X_var[s, k] == 0]
+                        constraints += [P_var[:, idx_sk] == 0]
                         continue
-
-                    idx_sk = s * self.K + k
                     
                     coeff_self = self_coeff[s, k]
                     h_sq = h_self_sq[s, k]
@@ -283,12 +299,12 @@ class OptimizationSolvers:
 
                     for l in range(self.L):
                         # I_{s,k,l}(P_hat)，先计算小区k在频段l上的总接收功率，再减去来自卫星s的有用信号
-                        I_hat_base = np.dot(base_coeff_by_k[k], P_best_flat[l, :])
-                        I_hat = max(0.0, I_hat_base - coeff_self * P_best_flat[l, idx_sk])
+                        I_hat_base = np.dot(base_coeff_by_k[k], P_ref_flat[l, :])
+                        I_hat = max(0.0, I_hat_base - coeff_self * P_ref_flat[l, idx_sk])
 
                         # 式(35): eta 在 P_hat 处的取值；phi、zeta 由 gamma_hat 计算
                         eta_hat = (h_sq * F_fixed[s, k]) / (noise + I_hat + 1e-15)
-                        gamma_hat = eta_hat * P_best_flat[l, idx_sk]
+                        gamma_hat = eta_hat * P_ref_flat[l, idx_sk]
                         phi_hat = gamma_hat / (1.0 + gamma_hat)
                         zeta_hat = np.log2(1.0 + gamma_hat) - phi_hat * np.log2(gamma_hat + 1e-15)
 
@@ -315,7 +331,7 @@ class OptimizationSolvers:
             prob = cp.Problem(objective, constraints)
             try:
                 cvx_verbose = getattr(self.config, 'CVX_VERBOSE', True)
-                scs_max_iters = getattr(self.config, 'SCS_MAX_ITERS', 50000)
+                scs_max_iters = getattr(self.config, 'SCS_MAX_ITERS', 10000)
                 scs_eps = getattr(self.config, 'SCS_EPS', 1e-4)
 
                 prob.solve(
@@ -323,7 +339,7 @@ class OptimizationSolvers:
                     warm_start=True,
                     max_iters=scs_max_iters,
                     eps=scs_eps,
-                    verbose=cvx_verbose
+                    # verbose=cvx_verbose
                 )
                 status = prob.status
                 print(f"        [P-SCA][SCS-1] prob.status = {status}")
@@ -358,6 +374,9 @@ class OptimizationSolvers:
                 P_best = P_best_flat.reshape(self.L, self.S, self.K)
             else:
                 break
+        
+        # 将非激活链路的功率置0
+        # P_best *= (F_fixed > 0)[None, :, :]
             
         return P_best
 
