@@ -14,8 +14,13 @@ def plot_simulation_results(history_metrics, config):
     slots = np.arange(1, len(history_metrics['avg_queue']) + 1)
     
     # 1. 绘制平均队列长度
+    avg_queue_values = np.array(history_metrics['avg_queue'])
+    avg_queue_max = float(np.max(avg_queue_values)) if avg_queue_values.size > 0 else 0.0
+    if avg_queue_max <= 0:
+        avg_queue_max = 1.0
     plt.figure(figsize=(8, 6))
     plt.plot(slots, history_metrics['avg_queue'], label='Proposed Algo', color='b', linewidth=2)
+    plt.ylim(0, avg_queue_max)
     plt.xlabel('Time Slots')
     plt.ylabel('Average Queue Length (packets)')
     plt.title('Average Queue Length vs Time Slots')
@@ -25,8 +30,13 @@ def plot_simulation_results(history_metrics, config):
     plt.close()
 
     # 2. 绘制平均功率消耗
+    avg_power_values = np.array(history_metrics['avg_power'])
+    avg_power_max = float(np.max(avg_power_values)) if avg_power_values.size > 0 else 0.0
+    if avg_power_max <= 0:
+        avg_power_max = 1.0
     plt.figure(figsize=(8, 6))
     plt.plot(slots, history_metrics['avg_power'], label='Proposed Algo', color='r', linewidth=2)
+    plt.ylim(0, avg_power_max)
     plt.xlabel('Time Slots')
     plt.ylabel('Average Power Consumption (W)')
     plt.title('Average Power Consumption vs Time Slots')
@@ -36,8 +46,13 @@ def plot_simulation_results(history_metrics, config):
     plt.close()
 
     # 3. 丢包率走势
+    drop_rate_values = np.array(history_metrics['drop_rate']) * 100
+    drop_rate_max = float(np.max(drop_rate_values)) if drop_rate_values.size > 0 else 0.0
+    if drop_rate_max <= 0:
+        drop_rate_max = 1.0
     plt.figure(figsize=(8, 6))
-    plt.plot(slots, np.array(history_metrics['drop_rate']) * 100, label='Proposed Algo', color='g', linewidth=2)
+    plt.plot(slots, drop_rate_values, label='Proposed Algo', color='g', linewidth=2)
+    plt.ylim(0, drop_rate_max)
     plt.xlabel('Time Slots')
     plt.ylabel('Drop Rate (%)')
     plt.title('Packet Drop Rate vs Time Slots')

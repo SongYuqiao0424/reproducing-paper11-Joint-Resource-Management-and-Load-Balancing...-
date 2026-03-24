@@ -326,12 +326,12 @@ class OptimizationSolvers:
 
             # rate_expr 表示论文最小化目标式19第一项中q_sk*x_sk这一项，仅表示这一项是因为固定F、B时其他项为定值，最小化目标中仅剩余此项需要优化
             # energy_expr 表示论文最小化目标式19第二项中卫星与地面波束能量消耗项，仅表示这一项是因为固定F、B时星间链路耗能为定值
-            #objective = cp.Minimize(-rate_expr / self.config.L_0 + (self.config.V / self.config.E_0) * energy_expr)
-            objective = cp.Minimize(-rate_expr / self.config.L_0)
+            objective = cp.Minimize(-rate_expr / self.config.L_0 + (self.config.V / self.config.E_0) * energy_expr)
+            # objective = cp.Minimize(-rate_expr / self.config.L_0)
             prob = cp.Problem(objective, constraints)
             try:
                 cvx_verbose = getattr(self.config, 'CVX_VERBOSE', True)
-                scs_max_iters = getattr(self.config, 'SCS_MAX_ITERS', 10000)
+                scs_max_iters = getattr(self.config, 'SCS_MAX_ITERS', 50000)
                 scs_eps = getattr(self.config, 'SCS_EPS', 1e-4)
 
                 prob.solve(
@@ -343,26 +343,6 @@ class OptimizationSolvers:
                 )
                 status = prob.status
                 print(f"        [P-SCA][SCS-1] prob.status = {status}")
-
-                # # 若仍是不精确解，先用更强SCS参数重试一次
-                # if status == cp.OPTIMAL_INACCURATE:
-                #     print("        [P-SCA][Warn] SCS首次求解为optimal_inaccurate，尝试增强参数重试。")
-                #     prob.solve(
-                #         solver=cp.SCS,
-                #         warm_start=True,
-                #         max_iters=max(80000, int(scs_max_iters * 1.5)),
-                #         eps=min(scs_eps, 5e-5),
-                #         verbose=cvx_verbose
-                #     )
-                #     status = prob.status
-                #     print(f"        [P-SCA][SCS-2] prob.status = {status}")
-
-                # # 若SCS两次后仍不精确，尝试CLARABEL（若已安装）
-                # if status == cp.OPTIMAL_INACCURATE and "CLARABEL" in cp.installed_solvers():
-                #     print("        [P-SCA][Warn] SCS仍不精确，尝试CLARABEL求解。")
-                #     prob.solve(solver=cp.CLARABEL, verbose=cvx_verbose)
-                #     status = prob.status
-                #     print(f"        [P-SCA][CLARABEL] prob.status = {status}")
 
                 if status == cp.OPTIMAL_INACCURATE:
                     print("        [P-SCA][Warn] final status=optimal_inaccurate：结果可用但需谨慎。")
