@@ -46,13 +46,8 @@ def plot_simulation_results(history_metrics, config):
     plt.close()
 
     # 3. 丢包率走势
-    drop_rate_values = np.array(history_metrics['drop_rate']) * 100
-    drop_rate_max = float(np.max(drop_rate_values)) if drop_rate_values.size > 0 else 0.0
-    if drop_rate_max <= 0:
-        drop_rate_max = 1.0
     plt.figure(figsize=(8, 6))
-    plt.plot(slots, drop_rate_values, label='Proposed Algo', color='g', linewidth=2)
-    plt.ylim(0, drop_rate_max)
+    plt.plot(slots, np.array(history_metrics['drop_rate']) * 100, label='Proposed Algo', color='g', linewidth=2)
     plt.xlabel('Time Slots')
     plt.ylabel('Drop Rate (%)')
     plt.title('Packet Drop Rate vs Time Slots')
