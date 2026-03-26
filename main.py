@@ -4,7 +4,13 @@ import time
 
 from config import Config
 from env.satellite_network import SatelliteNetworkEnv
-from utils.plotter import plot_simulation_results, plot_beam_power_heatmap, plot_beam_selection_heatmap, plot_sat0_exchange_matrix
+from utils.plotter import (
+    plot_simulation_results,
+    plot_beam_power_heatmap,
+    plot_beam_selection_heatmap,
+    plot_sat0_exchange_matrix,
+    plot_cell18_queue_and_transfer,
+)
 from algorithms.proposed_algo import ProposedAlgorithm
 
 def bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=None, P_in=None, B_in=None):
@@ -94,6 +100,9 @@ def main():
     # 用于收集卫星0的历史功率矩阵以供热力图绘制
     p_history_sat0 = []
     f_history_sat0 = []
+    q0_cell18_hist = []
+    q1_cell18_hist = []
+    b01_cell18_hist = []
     
     # 2. 模拟时隙循环开始 (指标由 env.history_metrics 统一管理)
     for n in range(config.MAX_TIME_SLOTS):
@@ -126,6 +135,14 @@ def main():
 
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
         step_metrics = env.step(F_opt, P_opt, B_opt)
+
+        # 记录小区18上 Sat0/Sat1 队列长度与 Sat0->Sat1 负载均衡传输量，用于绘制负载均衡校验图
+        if config.NUM_CELLS > 18:
+            q0_cell18_hist.append(env.queue_lengths[0, 18] if config.NUM_SATELLITES > 0 else 0.0)
+            q1_cell18_hist.append(env.queue_lengths[1, 18] if config.NUM_SATELLITES > 1 else 0.0)
+            b01_cell18_hist.append(B_opt[0, 1, 18] if config.NUM_SATELLITES > 1 else 0.0)
+
+        # 记录卫星0的功率分配和波束选择，用于绘制热力图
         if n < 50:
             p_history_sat0.append(P_opt.copy())
             f_history_sat0.append(F_opt.copy())
@@ -164,13 +181,20 @@ def main():
             q_strs = [f"C{k}:{q_lens[k]:.1f}" for k in range(cell_count_to_show)]
             print(f"    Sat0 Queue Lengths -> [{', '.join(q_strs)}]")
 
-            # 打印卫星1和卫星8在小区0~18上的队列长度（用于观察负载均衡）
-            for sat_idx in [1, 8]:
+            # 打印卫星1和卫星8：先打印激活波束，再打印队列长度，用于观察负载均衡
+            print("")
+            for i, sat_idx in enumerate([1, 8]):
                 if sat_idx < config.NUM_SATELLITES:
+                    selected_indices = np.argsort(F_opt[sat_idx, :])[-4:][::-1].tolist()
+                    details = [f"C{idx}({F_opt[sat_idx, idx]:.2f})" for idx in selected_indices]
+                    print(f"    Sat{sat_idx} Beam Allocation -> [{', '.join(details)}]")
+
                     sat_q = env.queue_lengths[sat_idx, :cell_count_to_show]
                     sat_q_strs = [f"C{k}:{sat_q[k]:.1f}" for k in range(cell_count_to_show)]
                     print(f"    Sat{sat_idx} Queue Lengths -> [{', '.join(sat_q_strs)}]")
+                    print("")
                 else:
+                    print(f"    Sat{sat_idx} Beam Allocation -> [N/A: satellite index out of range, NUM_SATELLITES={config.NUM_SATELLITES}]")
                     print(f"    Sat{sat_idx} Queue Lengths -> [N/A: satellite index out of range, NUM_SATELLITES={config.NUM_SATELLITES}]")
 
     # 3. 运行结束，输出总体仿真指标
@@ -188,6 +212,8 @@ def main():
     if len(p_history_sat0) > 0:
         plot_beam_power_heatmap(p_history_sat0, config)
         plot_beam_selection_heatmap(f_history_sat0, config)
+    if len(q0_cell18_hist) > 0:
+        plot_cell18_queue_and_transfer(q0_cell18_hist, q1_cell18_hist, b01_cell18_hist)
     print('[INFO] Done.')
     
 if __name__ == '__main__':

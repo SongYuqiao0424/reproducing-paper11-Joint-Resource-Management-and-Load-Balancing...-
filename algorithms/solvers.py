@@ -418,8 +418,7 @@ class OptimizationSolvers:
         t_pair = c_pair * self.config.PACKET_SIZE / getattr(self.config, 'ISL_DATA_RATE', 1e9)
         energy_isl_expr = getattr(self.config, 'ISL_POWER_CONSUMPTION', 5.0) * cp.sum(t_pair)
 
-        # objective = cp.Minimize(drift_expr + (self.config.V / self.config.E_0) * energy_isl_expr)
-        objective = cp.Minimize(drift_expr)
+        objective = cp.Minimize(drift_expr + (self.config.V / self.config.E_0) * energy_isl_expr)
         prob = cp.Problem(objective, constraints)
         try:
             prob.solve(solver=cp.OSQP) 

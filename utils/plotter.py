@@ -102,6 +102,45 @@ def plot_simulation_results(history_metrics, config):
     plt.close()
 
 
+def plot_cell18_queue_and_transfer(q0_hist, q1_hist, b01_hist):
+    '''
+    绘制小区18上三条时序曲线：
+    1) 卫星0-小区18队列长度
+    2) 卫星1-小区18队列长度
+    3) 卫星0->卫星1在小区18上的负载均衡传输量（正值表示0传向1）
+    '''
+    if len(q0_hist) == 0:
+        return
+
+    os.makedirs('仿真结果', exist_ok=True)
+
+    slots = np.arange(1, len(q0_hist) + 1)
+    q0_arr = np.array(q0_hist)
+    q1_arr = np.array(q1_hist)
+    b01_arr = np.array(b01_hist)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(slots, q0_arr, label='Sat0 Queue @ Cell18', color='tab:blue', linewidth=2)
+    plt.plot(slots, q1_arr, label='Sat1 Queue @ Cell18', color='tab:orange', linewidth=2)
+    plt.plot(slots, b01_arr, label='Load Balance Transfer 0->1 @ Cell18', color='tab:green', linewidth=2)
+
+    y_min = float(min(np.min(q0_arr), np.min(q1_arr), np.min(b01_arr)))
+    y_max = float(max(np.max(q0_arr), np.max(q1_arr), np.max(b01_arr)))
+    if y_max <= y_min:
+        y_min, y_max = y_min - 1.0, y_max + 1.0
+    margin = 0.1 * max(1.0, (y_max - y_min))
+    plt.ylim(y_min - margin, y_max + margin)
+
+    plt.xlabel('Time Slots')
+    plt.ylabel('Packets')
+    plt.title('Queue Evolution and Load-Balance Transfer on Cell 18')
+    plt.grid(True, linestyle='--')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('仿真结果/cell18_queue_transfer_sat0_sat1.png', dpi=300)
+    plt.close()
+
+
 def plot_beam_power_heatmap(p_history_sat0, config):
     '''
     绘制二维表格的热力图，大小为19*50
