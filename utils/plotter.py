@@ -3,6 +3,48 @@ import numpy as np
 import seaborn as sns
 import os
 
+
+def plot_sat0_exchange_matrix(config):
+    '''
+    绘制卫星0与其覆盖小区上的可交换关系图：
+    - 横坐标：卫星0覆盖的19个小区
+    - 纵坐标：9个卫星（含卫星0）
+    - 蓝色：该卫星也覆盖该小区，可通过星间链路交换该小区队列数据包
+    '''
+    source_sat = 0
+    cells_sat0 = config.OMEGA_S[source_sat]
+    num_sats = config.NUM_SATELLITES
+
+    exchange_map = np.zeros((num_sats, len(cells_sat0)))
+    for col_idx, k in enumerate(cells_sat0):
+        covered_sats = set(config.PHI_K[k])
+        for s in range(num_sats):
+            if s != source_sat and s in covered_sats:
+                exchange_map[s, col_idx] = 1.0
+
+    plt.figure(figsize=(14, 6))
+    ax = sns.heatmap(
+        exchange_map,
+        cmap=sns.color_palette(["white", "royalblue"], as_cmap=True),
+        vmin=0,
+        vmax=1,
+        cbar=False,
+        linewidths=.5,
+        linecolor='lightgray'
+    )
+
+    ax.set_title('Satellite 0 ISL Queue-Exchange Map')
+    ax.set_xlabel('Cells Covered by Satellite 0')
+    ax.set_ylabel('Satellite Index')
+
+    ax.set_xticks(np.arange(len(cells_sat0)) + 0.5)
+    ax.set_xticklabels([f"C{k}" for k in cells_sat0], rotation=45, ha='right')
+    ax.set_yticks(np.arange(num_sats) + 0.5)
+    ax.set_yticklabels([f"Sat {s}" for s in range(num_sats)], rotation=0)
+
+    plt.tight_layout()
+    plt.show()
+
 def plot_simulation_results(history_metrics, config):
     '''
     根据论文风格绘制仿真结果指标走势图，如：
@@ -10,6 +52,7 @@ def plot_simulation_results(history_metrics, config):
     2. 平均功率随时间的变化
     '''
     os.makedirs('仿真结果', exist_ok=True)
+    y_margin = 1.1
     
     slots = np.arange(1, len(history_metrics['avg_queue']) + 1)
     
@@ -18,9 +61,10 @@ def plot_simulation_results(history_metrics, config):
     avg_queue_max = float(np.max(avg_queue_values)) if avg_queue_values.size > 0 else 0.0
     if avg_queue_max <= 0:
         avg_queue_max = 1.0
+    avg_queue_ylim = avg_queue_max * y_margin
     plt.figure(figsize=(8, 6))
     plt.plot(slots, history_metrics['avg_queue'], label='Proposed Algo', color='b', linewidth=2)
-    plt.ylim(0, avg_queue_max)
+    plt.ylim(0, avg_queue_ylim)
     plt.xlabel('Time Slots')
     plt.ylabel('Average Queue Length (packets)')
     plt.title('Average Queue Length vs Time Slots')
@@ -34,9 +78,10 @@ def plot_simulation_results(history_metrics, config):
     avg_power_max = float(np.max(avg_power_values)) if avg_power_values.size > 0 else 0.0
     if avg_power_max <= 0:
         avg_power_max = 1.0
+    avg_power_ylim = avg_power_max * y_margin
     plt.figure(figsize=(8, 6))
     plt.plot(slots, history_metrics['avg_power'], label='Proposed Algo', color='r', linewidth=2)
-    plt.ylim(0, avg_power_max)
+    plt.ylim(0, avg_power_ylim)
     plt.xlabel('Time Slots')
     plt.ylabel('Average Power Consumption (W)')
     plt.title('Average Power Consumption vs Time Slots')

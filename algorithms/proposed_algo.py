@@ -40,7 +40,7 @@ class ProposedAlgorithm:
             P_next = self.solvers.solve_P_SCA(F_next, P_current, B_current, h_matrix, g_matrix, Q_lengths)
             
             # 3. 优化 负载均衡矩阵 B (使用 QP 二次规划算法)
-            B_next = self.solvers.solve_B_QP(F_next, P_next, B_current, Q_lengths)
+            B_next = self.solvers.solve_B_QP(F_next, P_next, B_current, h_matrix, Q_lengths)
             
             F_current = F_next
             P_current = P_next

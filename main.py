@@ -4,7 +4,7 @@ import time
 
 from config import Config
 from env.satellite_network import SatelliteNetworkEnv
-from utils.plotter import plot_simulation_results, plot_beam_power_heatmap, plot_beam_selection_heatmap
+from utils.plotter import plot_simulation_results, plot_beam_power_heatmap, plot_beam_selection_heatmap, plot_sat0_exchange_matrix
 from algorithms.proposed_algo import ProposedAlgorithm
 
 def bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=None, P_in=None, B_in=None):
@@ -86,6 +86,9 @@ def main():
     print(f'[INFO] Simulation Slots: {config.MAX_TIME_SLOTS}')
     print('-----------------------------------------------------------')
 
+    # 先展示卫星0在其覆盖小区上与其他卫星的可交换关系图
+    # plot_sat0_exchange_matrix(config)
+
     start_time = time.time()
     
     # 用于收集卫星0的历史功率矩阵以供热力图绘制
@@ -98,8 +101,10 @@ def main():
         h_matrix, g_matrix = env.channel_model.generate_random_channel_matrices()
         
         # (b) 进行联合求解策略计算：BCD 优化获取 F[n], P[n], B[n] 
-        # 使用真实的 BCD 交替优化算法求解 (保留原 placeholder 用于对比/备份)
+        # 使用随机占位函数替代完整 BCD 求解
         # F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+
+        # 使用真实的 BCD 交替优化算法求解
         # F_opt, P_opt, B_opt = algo.step(h_matrix, g_matrix, env.queue_lengths)
 
         # 单独测试 MPMM 算法对 F 的优化效果
@@ -108,10 +113,16 @@ def main():
         # algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
         
         # 单独测试 MPMM 算法对 P 的优化效果
-        F_opt, _, _ = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
-        P_opt = algo.solvers.solve_P_SCA(F_opt, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
-        _, _, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt, P_in=P_opt)
+        # F_opt, _, _ = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        # P_opt = algo.solvers.solve_P_SCA(F_opt, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
+        # _, _, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt, P_in=P_opt)
+        # algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
+
+        # 单独测试 MPMM 算法对 B 的优化效果
+        F_opt, P_opt, _ = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        B_opt = algo.solvers.solve_B_QP(F_opt, P_opt, algo.B_prev, h_matrix, env.queue_lengths)
         algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
+
 
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
         step_metrics = env.step(F_opt, P_opt, B_opt)
@@ -139,11 +150,28 @@ def main():
             if not active_power_strs:
                 active_power_strs = ["All 0W"]
             print(f"    Sat0 Power Alloc -> [{', '.join(active_power_strs)}]")
+
+            # 打印卫星0在小区0~18上的负载均衡净变化 d_{0,k}
+            sat0_deltas = []
+            for k in range(min(19, config.NUM_CELLS)):
+                d_0k = sum(B_opt[r, 0, k] for r in config.PHI_K[k])
+                sat0_deltas.append(f"C{k}:{d_0k:+.2f}")
+            print(f"    Sat0 Load Balance Δ -> [{', '.join(sat0_deltas)}]")
             
             # 打印卫星0对应那19个小区的队列长度，带上小区号
-            q_lens = env.queue_lengths[0, 0:19]
-            q_strs = [f"C{k}:{q_lens[k]:.1f}" for k in range(19)]
+            cell_count_to_show = min(19, config.NUM_CELLS)
+            q_lens = env.queue_lengths[0, :cell_count_to_show]
+            q_strs = [f"C{k}:{q_lens[k]:.1f}" for k in range(cell_count_to_show)]
             print(f"    Sat0 Queue Lengths -> [{', '.join(q_strs)}]")
+
+            # 打印卫星1和卫星8在小区0~18上的队列长度（用于观察负载均衡）
+            for sat_idx in [1, 8]:
+                if sat_idx < config.NUM_SATELLITES:
+                    sat_q = env.queue_lengths[sat_idx, :cell_count_to_show]
+                    sat_q_strs = [f"C{k}:{sat_q[k]:.1f}" for k in range(cell_count_to_show)]
+                    print(f"    Sat{sat_idx} Queue Lengths -> [{', '.join(sat_q_strs)}]")
+                else:
+                    print(f"    Sat{sat_idx} Queue Lengths -> [N/A: satellite index out of range, NUM_SATELLITES={config.NUM_SATELLITES}]")
 
     # 3. 运行结束，输出总体仿真指标
     elapsed_time = time.time() - start_time

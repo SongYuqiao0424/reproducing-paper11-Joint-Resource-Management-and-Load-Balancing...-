@@ -299,6 +299,7 @@ class OptimizationSolvers:
 
                     for l in range(self.L):
                         # I_{s,k,l}(P_hat)，先计算小区k在频段l上的总接收功率，再减去来自卫星s的有用信号
+                        # 在base_coeff_by_k中，对于每个小区k仅计算Φ(k)中卫星波束的系数，故I_hat_base的计算符合式1
                         I_hat_base = np.dot(base_coeff_by_k[k], P_ref_flat[l, :])
                         I_hat = max(0.0, I_hat_base - coeff_self * P_ref_flat[l, idx_sk])
 
@@ -360,40 +361,65 @@ class OptimizationSolvers:
             
         return P_best
 
-    def solve_B_QP(self, F_fixed, P_fixed, B_prev, Q_lengths):
+    def solve_B_QP(self, F_fixed, P_fixed, B_prev, h_matrix, Q_lengths):
         ''' QP for Load Balancing Matrix '''
-        B_var = cp.Variable((self.S, self.S, self.K))
-        
-        constraints = []
+        pair_list = []
+        for r in range(self.S):
+            for s in range(r + 1, self.S):
+                pair_list.append((r, s))
+        pair_count = len(pair_list)
+
+        # B_pair[p, k] 表示卫星对 pair_list[p]=(r,s) 在小区k上的有向传输量（r->s为正，s->r为负）
+        B_pair = cp.Variable((pair_count, self.K))
+        x_var = cp.Variable((self.S, self.K), nonneg=True)
+
+        # 预计算卫星-卫星对关联矩阵 A，表示卫星 s 与卫星对 p 的关系
+        # 若 pair=(r,s)，则对卫星r系数为-1，表示卫星r向外传输，队列长度减少；对卫星s系数为+1，表示传输至卫星s，队列长度增加
+        # 可以视为约束13h
+        incidence_A = np.zeros((self.S, pair_count))
+        for pair_idx, (r, s) in enumerate(pair_list):
+            incidence_A[r, pair_idx] = -1.0
+            incidence_A[s, pair_idx] = 1.0
+
+        # 预计算约束13i合法掩码：仅当(r,s)都覆盖小区k时，B_pair[p,k]可非零
+        valid_pair_mask = np.zeros((pair_count, self.K))
         for k in range(self.K):
-            for r in range(self.S):
-                for s in range(self.S):
-                    if r == s:
-                        constraints += [B_var[r, s, k] == 0]
-                    else:
-                        constraints += [B_var[r, s, k] == -B_var[s, r, k]]
-                        
-        for r in range(self.S):
-            for s in range(self.S):
-                if r < s:
-                    sum_abs = cp.sum(cp.abs(B_var[r, s, :]))
-                    constraints += [sum_abs <= getattr(self.config, 'ISL_MAX_TRANSFER_PKTS', 10)]
-        
-        obj_expr = 0
-        energy_isl_expr = 0
-        for s in range(self.S):
-            for k in range(self.K):
-                d_sk = cp.sum(B_var[:, s, k]) 
-                obj_expr += (Q_lengths[s, k] * d_sk + 0.5 * cp.square(d_sk)) / self.config.L_0
+            phi_k_set = set(self.config.PHI_K[k])
+            for pair_idx, (r, s) in enumerate(pair_list):
+                if (r in phi_k_set) and (s in phi_k_set):
+                    valid_pair_mask[pair_idx, k] = 1.0
 
-        for r in range(self.S):
-            for s in range(self.S):
-                if r < s:
-                     c_rs = cp.sum(cp.abs(B_var[r, s, :]))
-                     t_rs = c_rs * self.config.PACKET_SIZE / getattr(self.config, 'ISL_DATA_RATE', 1e9)
-                     energy_isl_expr += getattr(self.config, 'ISL_POWER_CONSUMPTION', 5.0) * t_rs
+        # 约束13k（与env中step的R_pkts保持一致，后续修改）：R_pkts = 100 * P
+        # 计算波束在所有频段上的总接收功率
+        power_sk = np.sum(P_fixed, axis=0)
+        R_pkts_cap = 100.0 * power_sk
 
-        objective = cp.Minimize(obj_expr + (self.config.V / self.config.E_0) * energy_isl_expr)
+        constraints = []
+        # 约束13i：非法卫星对在对应小区上的传输量强制为0
+        constraints += [cp.multiply(1.0 - valid_pair_mask, B_pair) == 0]
+
+        # 约束13j：每个卫星对总转移量上限
+        c_pair = cp.sum(cp.abs(B_pair), axis=1)
+        constraints += [c_pair <= getattr(self.config, 'ISL_MAX_TRANSFER_PKTS', 10)]
+
+        # d_{s,k} ，卫星 s 到小区 k 波束队列上的净负载变化量
+        d_mat = incidence_A @ B_pair
+
+        # 约束13k、13l，其中13k为简化版，后续需要修正
+        constraints += [x_var <= Q_lengths + d_mat]
+        constraints += [x_var <= R_pkts_cap]
+
+        # 约束13k的一部分，波束未激活时 x_var = 0
+        inactive_mask = (F_fixed == 0).astype(float)
+        constraints += [cp.multiply(inactive_mask, x_var) == 0]
+
+        # 目标函数，在固定F、P的前提下，能耗部分只需要考虑星间链路能耗
+        drift_expr = cp.sum(cp.multiply(Q_lengths, (d_mat - x_var)) + 0.5 * cp.square(d_mat)) / self.config.L_0
+        t_pair = c_pair * self.config.PACKET_SIZE / getattr(self.config, 'ISL_DATA_RATE', 1e9)
+        energy_isl_expr = getattr(self.config, 'ISL_POWER_CONSUMPTION', 5.0) * cp.sum(t_pair)
+
+        # objective = cp.Minimize(drift_expr + (self.config.V / self.config.E_0) * energy_isl_expr)
+        objective = cp.Minimize(drift_expr)
         prob = cp.Problem(objective, constraints)
         try:
             prob.solve(solver=cp.OSQP) 
@@ -404,8 +430,13 @@ class OptimizationSolvers:
                 pass
 
         B_res = B_prev.copy()
-        if B_var.value is not None:
-             B_res = B_var.value 
+        if B_pair.value is not None:
+             B_res = np.zeros((self.S, self.S, self.K))
+             B_pair_val = B_pair.value
+             # 可以视为约束13h
+             for pair_idx, (r, s) in enumerate(pair_list):
+                 B_res[r, s, :] = B_pair_val[pair_idx, :]
+                 B_res[s, r, :] = -B_pair_val[pair_idx, :]
         else:
              B_res = np.zeros((self.S, self.S, self.K))
              
