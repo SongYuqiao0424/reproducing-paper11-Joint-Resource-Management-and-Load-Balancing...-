@@ -10,7 +10,7 @@ class Config:
     
     # 卫星运动分布属性
     ORBIT_ALTITUDE = 1000e3       # LEO 卫星轨道高度 (1000 km)
-    INCLINATION = 85.0            # 轨道倾角 (85 弧度)
+    INCLINATION = 85.0            # 轨道倾角 (85 弧度，暂未使用，仿真绘图轨道倾角为30°)
     INTER_SAT_DISTANCE = 207e3    # 相邻 LEO 星间距离 (207 km)
     CELL_RADIUS = 39e3            # 小区半径 (39 km)
 
