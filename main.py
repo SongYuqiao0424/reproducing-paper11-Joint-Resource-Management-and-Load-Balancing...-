@@ -1,6 +1,7 @@
 ﻿import os
 import numpy as np
 import time
+import shutil
 
 from config import Config
 from env.satellite_network import SatelliteNetworkEnv
@@ -9,7 +10,7 @@ from utils.plotter import (
     plot_beam_power_heatmap,
     plot_beam_selection_heatmap,
     plot_sat0_exchange_matrix,
-    plot_cell18_queue_and_transfer,
+    plot_cell69_queue_and_transfer,
 )
 from algorithms.proposed_algo import ProposedAlgorithm
 
@@ -100,9 +101,10 @@ def main():
     # 用于收集卫星0的历史功率矩阵以供热力图绘制
     p_history_sat0 = []
     f_history_sat0 = []
-    q0_cell18_hist = []
-    q1_cell18_hist = []
-    b01_cell18_hist = []
+    q0_cell69_hist = []
+    q1_cell69_hist = []
+    b01_cell69_hist = []
+    sat0_cells = sorted(config.OMEGA_S.get(0, []))
     
     # 2. 模拟时隙循环开始 (指标由 env.history_metrics 统一管理)
     for n in range(config.MAX_TIME_SLOTS):
@@ -111,7 +113,7 @@ def main():
         
         # (b) 进行联合求解策略计算：BCD 优化获取 F[n], P[n], B[n] 
         # 使用随机占位函数替代完整 BCD 求解
-        # F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
 
         # 使用真实的 BCD 交替优化算法求解
         # F_opt, P_opt, B_opt = algo.step(h_matrix, g_matrix, env.queue_lengths)
@@ -128,19 +130,20 @@ def main():
         # algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
 
         # 单独测试 MPMM 算法对 B 的优化效果
-        F_opt, P_opt, _ = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
-        B_opt = algo.solvers.solve_B_QP(F_opt, P_opt, algo.B_prev, h_matrix, env.queue_lengths)
-        algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
+        # F_opt, P_opt, _ = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        # B_opt = algo.solvers.solve_B_QP(F_opt, P_opt, algo.B_prev, h_matrix, env.queue_lengths)
+        # algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
 
 
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
         step_metrics = env.step(F_opt, P_opt, B_opt)
 
-        # 记录小区18上 Sat0/Sat1 队列长度与 Sat0->Sat1 负载均衡传输量，用于绘制负载均衡校验图
-        if config.NUM_CELLS > 18:
-            q0_cell18_hist.append(env.queue_lengths[0, 18] if config.NUM_SATELLITES > 0 else 0.0)
-            q1_cell18_hist.append(env.queue_lengths[1, 18] if config.NUM_SATELLITES > 1 else 0.0)
-            b01_cell18_hist.append(B_opt[0, 1, 18] if config.NUM_SATELLITES > 1 else 0.0)
+        # 记录小区69上 Sat0/Sat1 队列长度与 Sat0->Sat1 负载均衡传输量，用于绘制负载均衡校验图
+        target_cell = 69
+        if config.NUM_CELLS > target_cell:
+            q0_cell69_hist.append(env.queue_lengths[0, target_cell] if config.NUM_SATELLITES > 0 else 0.0)
+            q1_cell69_hist.append(env.queue_lengths[1, target_cell] if config.NUM_SATELLITES > 1 else 0.0)
+            b01_cell69_hist.append(B_opt[0, 1, target_cell] if config.NUM_SATELLITES > 1 else 0.0)
 
         # 记录卫星0的功率分配和波束选择，用于绘制热力图
         if n < 50:
@@ -156,46 +159,73 @@ def main():
             print(f'[Slot {n+1:4d} / {config.MAX_TIME_SLOTS}] Queue: {avg_q:.2f} pkts | Power: {pwr:.4f} W | Tput: {tpt:.2f} | Drop Rate: {drp*100:.2f}%')
             
             # --- 新增：仅打印本时隙卫星0选择了哪些小区及其对应的 F_opt 分值 ---
-            selected_indices = np.argsort(F_opt[0, :])[-4:][::-1].tolist()
+            if sat0_cells:
+                sat0_scores = F_opt[0, sat0_cells]
+                top_n = min(4, len(sat0_cells))
+                selected_local = np.argsort(sat0_scores)[-top_n:][::-1]
+                selected_indices = sorted([sat0_cells[i] for i in selected_local])
+            else:
+                selected_indices = []
             details = [f"C{idx}({F_opt[0, idx]:.2f})" for idx in selected_indices]
             print(f"    Sat0 Beam Allocation -> [{', '.join(details)}]")
             
             # 打印卫星0对每个小区分别的功率 (仅对频段L求和)
             sat0_power = np.sum(P_opt[:, 0, :], axis=0)
-            # 加上编号 C0~C18 方便对比，这里仅展示分配功率大于0的小区以防太长
-            active_power_strs = [f"C{k}:{sat0_power[k]:.2f}W" for k in range(config.NUM_CELLS) if sat0_power[k] > 0.001]
+            # 加上编号方便对比，这里仅展示分配功率大于0的小区以防太长
+            active_power_strs = [f"C{k}:{sat0_power[k]:.2f}W" for k in sat0_cells if sat0_power[k] > 0.001]
             if not active_power_strs:
                 active_power_strs = ["All 0W"]
             print(f"    Sat0 Power Alloc -> [{', '.join(active_power_strs)}]")
 
-            # 打印卫星0在小区0~18上的负载均衡净变化 d_{0,k}
-            sat0_deltas = []
-            for k in range(min(19, config.NUM_CELLS)):
-                d_0k = sum(B_opt[r, 0, k] for r in config.PHI_K[k])
-                sat0_deltas.append(f"C{k}:{d_0k:+.2f}")
-            print(f"    Sat0 Load Balance Δ -> [{', '.join(sat0_deltas)}]")
-            
-            # 打印卫星0对应那19个小区的队列长度，带上小区号
-            cell_count_to_show = min(19, config.NUM_CELLS)
-            q_lens = env.queue_lengths[0, :cell_count_to_show]
-            q_strs = [f"C{k}:{q_lens[k]:.1f}" for k in range(cell_count_to_show)]
+             # 打印卫星0覆盖小区上的队列长度，带上小区号
+            q_strs = [f"C{k}:{env.queue_lengths[0, k]:.1f}" for k in sat0_cells]
             print(f"    Sat0 Queue Lengths -> [{', '.join(q_strs)}]")
 
-            # 打印卫星1和卫星8：先打印激活波束，再打印队列长度，用于观察负载均衡
-            print("")
-            for i, sat_idx in enumerate([1, 8]):
-                if sat_idx < config.NUM_SATELLITES:
-                    selected_indices = np.argsort(F_opt[sat_idx, :])[-4:][::-1].tolist()
-                    details = [f"C{idx}({F_opt[sat_idx, idx]:.2f})" for idx in selected_indices]
-                    print(f"    Sat{sat_idx} Beam Allocation -> [{', '.join(details)}]")
+            # 仅打印卫星0与其他卫星共同覆盖的小区：
+            # Cnum:S0_queuelength_on/off;Snum1_queuelength_on/off;Snum2_...;load_balance
+            shared_lb_items = []
+            for k in sat0_cells:
+                shared_sats = sorted([s for s in config.PHI_K.get(k, []) if s != 0])
+                if not shared_sats:
+                    continue
 
-                    sat_q = env.queue_lengths[sat_idx, :cell_count_to_show]
-                    sat_q_strs = [f"C{k}:{sat_q[k]:.1f}" for k in range(cell_count_to_show)]
-                    print(f"    Sat{sat_idx} Queue Lengths -> [{', '.join(sat_q_strs)}]")
-                    print("")
-                else:
-                    print(f"    Sat{sat_idx} Beam Allocation -> [N/A: satellite index out of range, NUM_SATELLITES={config.NUM_SATELLITES}]")
-                    print(f"    Sat{sat_idx} Queue Lengths -> [N/A: satellite index out of range, NUM_SATELLITES={config.NUM_SATELLITES}]")
+                s0_q = env.queue_lengths[0, k]
+                s0_state = 'on' if F_opt[0, k] > 0.5 else 'off'
+                sat_parts = [f"S0_{s0_q:.1f}_{s0_state}"]
+                for s in shared_sats:
+                    s_q = env.queue_lengths[s, k]
+                    s_state = 'on' if F_opt[s, k] > 0.5 else 'off'
+                    sat_parts.append(f"S{s}_{s_q:.1f}_{s_state}")
+
+                d_0k = sum(B_opt[r, 0, k] for r in config.PHI_K.get(k, []))
+                shared_lb_items.append(f"C{k}:{';'.join(sat_parts)};{d_0k:+.2f}")
+
+            print("    Sat0 Shared Load Balance ->")
+            if shared_lb_items:
+                term_width = shutil.get_terminal_size(fallback=(160, 24)).columns
+                half_width = max(40, term_width // 2)
+                i = 0
+                while i < len(shared_lb_items):
+                    left_item = shared_lb_items[i]
+
+                    # 若左侧内容超过半宽，则本行只打印一条
+                    if len(left_item) > half_width:
+                        print(left_item)
+                        i += 1
+                        continue
+                    # 尝试放置右侧内容；若右侧超过半宽则本行仅打印左侧
+                    if i + 1 < len(shared_lb_items):
+                        right_item = shared_lb_items[i + 1]
+                        if len(right_item) <= half_width:
+                            print(f"{left_item.ljust(half_width)}{right_item}")
+                            i += 2
+                            continue
+                    print(left_item)
+                    i += 1
+            else:
+                print("        No shared cells with other satellites")
+
+            print("")
 
     # 3. 运行结束，输出总体仿真指标
     elapsed_time = time.time() - start_time
@@ -212,8 +242,8 @@ def main():
     if len(p_history_sat0) > 0:
         plot_beam_power_heatmap(p_history_sat0, config)
         plot_beam_selection_heatmap(f_history_sat0, config)
-    if len(q0_cell18_hist) > 0:
-        plot_cell18_queue_and_transfer(q0_cell18_hist, q1_cell18_hist, b01_cell18_hist)
+    if len(q0_cell69_hist) > 0:
+        plot_cell69_queue_and_transfer(q0_cell69_hist, q1_cell69_hist, b01_cell69_hist)
     print('[INFO] Done.')
     
 if __name__ == '__main__':

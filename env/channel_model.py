@@ -8,6 +8,34 @@ class ChannelModel:
         # 从 dBm/Hz 转换为常数瓦特 (W/Hz)
         self.noise_power = 10 ** (self.config.NOISE_PSD_DBW / 10)  # 从 dBW/Hz 转为 线性瓦特
         self.sat_positions, self.cell_positions = self._build_static_geometry()
+        self._build_coverage_sets_from_geometry()
+
+    def _build_coverage_sets_from_geometry(self):
+        '''
+        按几何距离生成覆盖关系：
+        - 小区编号：cell_positions[idx, :] 中的 idx
+        - 卫星编号：sat_positions[sat_idx, :] 中的 sat_idx
+        - 每颗卫星选最近 NUM_CELLS_PER_SAT 个小区作为 OMEGA_S[s]
+        - 同时构建 PHI_K[k]（覆盖该小区的卫星列表）
+        '''
+        S = self.config.NUM_SATELLITES
+        K = self.config.NUM_CELLS
+        cells_per_sat = int(getattr(self.config, 'NUM_CELLS_PER_SAT', 19))
+        cells_per_sat = max(1, min(cells_per_sat, K))
+
+        omega_s = {s: [] for s in range(S)}
+        phi_k = {k: [] for k in range(K)}
+
+        for s in range(S):
+            dists = np.linalg.norm(self.cell_positions - self.sat_positions[s], axis=1)
+            nearest_cells = np.argsort(dists)[:cells_per_sat].tolist()
+            omega_s[s] = nearest_cells
+            for k in nearest_cells:
+                phi_k[k].append(s)
+
+        # 写回配置对象，替代固定的预定义拓扑
+        self.config.OMEGA_S = omega_s
+        self.config.PHI_K = phi_k
 
     def _build_static_geometry(self):
         '''

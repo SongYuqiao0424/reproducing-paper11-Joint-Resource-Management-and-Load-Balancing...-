@@ -3,6 +3,7 @@ class Config:
     # ---------------- 卫星与网络拓扑参数 (基于 Table II) ----------------
     NUM_SATELLITES = 9            # 卫星数量 |S| (9)
     NUM_BEAMS_PER_SAT = 4         # 每颗卫星波束数量 Nb (4)
+    NUM_CELLS_PER_SAT = 19        # 每颗卫星覆盖的小区数量
     NUM_CELLS = 99                # 目标服务地面小区数量 |K| (99)
     NUM_FREQUENCY_SEGMENTS = 4    # 频率段块数量 |L| (4)
     BANDWIDTH_PER_SEGMENT = 50e6  # 每个频率段带宽 W (50 MHz)

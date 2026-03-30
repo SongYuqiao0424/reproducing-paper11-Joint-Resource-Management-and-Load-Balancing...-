@@ -12,7 +12,7 @@ def plot_sat0_exchange_matrix(config):
     - 蓝色：该卫星也覆盖该小区，可通过星间链路交换该小区队列数据包
     '''
     source_sat = 0
-    cells_sat0 = config.OMEGA_S[source_sat]
+    cells_sat0 = sorted(config.OMEGA_S[source_sat])
     num_sats = config.NUM_SATELLITES
 
     exchange_map = np.zeros((num_sats, len(cells_sat0)))
@@ -102,12 +102,12 @@ def plot_simulation_results(history_metrics, config):
     plt.close()
 
 
-def plot_cell18_queue_and_transfer(q0_hist, q1_hist, b01_hist):
+def plot_cell69_queue_and_transfer(q0_hist, q1_hist, b01_hist):
     '''
-    绘制小区18上三条时序曲线：
-    1) 卫星0-小区18队列长度
-    2) 卫星1-小区18队列长度
-    3) 卫星0->卫星1在小区18上的负载均衡传输量（正值表示0传向1）
+    绘制小区69上三条时序曲线：
+    1) 卫星0-小区69队列长度
+    2) 卫星1-小区69队列长度
+    3) 卫星0->卫星1在小区69上的负载均衡传输量（正值表示0传向1）
     '''
     if len(q0_hist) == 0:
         return
@@ -120,9 +120,9 @@ def plot_cell18_queue_and_transfer(q0_hist, q1_hist, b01_hist):
     b01_arr = np.array(b01_hist)
 
     plt.figure(figsize=(10, 6))
-    plt.plot(slots, q0_arr, label='Sat0 Queue @ Cell18', color='tab:blue', linewidth=2)
-    plt.plot(slots, q1_arr, label='Sat1 Queue @ Cell18', color='tab:orange', linewidth=2)
-    plt.plot(slots, b01_arr, label='Load Balance Transfer 0->1 @ Cell18', color='tab:green', linewidth=2)
+    plt.plot(slots, q0_arr, label='Sat0 Queue @ Cell69', color='tab:blue', linewidth=2)
+    plt.plot(slots, q1_arr, label='Sat1 Queue @ Cell69', color='tab:orange', linewidth=2)
+    plt.plot(slots, b01_arr, label='Load Balance Transfer 0->1 @ Cell69', color='tab:green', linewidth=2)
 
     y_min = float(min(np.min(q0_arr), np.min(q1_arr), np.min(b01_arr)))
     y_max = float(max(np.max(q0_arr), np.max(q1_arr), np.max(b01_arr)))
@@ -133,11 +133,11 @@ def plot_cell18_queue_and_transfer(q0_hist, q1_hist, b01_hist):
 
     plt.xlabel('Time Slots')
     plt.ylabel('Packets')
-    plt.title('Queue Evolution and Load-Balance Transfer on Cell 18')
+    plt.title('Queue Evolution and Load-Balance Transfer on Cell 69')
     plt.grid(True, linestyle='--')
     plt.legend()
     plt.tight_layout()
-    plt.savefig('仿真结果/cell18_queue_transfer_sat0_sat1.png', dpi=300)
+    plt.savefig('仿真结果/cell69_queue_transfer_sat0_sat1.png', dpi=300)
     plt.close()
 
 
@@ -149,8 +149,8 @@ def plot_beam_power_heatmap(p_history_sat0, config):
     纵坐标: 第一个卫星覆盖的19个小区
     颜色深浅: 分配的功率大小
     '''
-    # 取出卫星0覆盖的19个小区编号
-    cells_sat0 = config.OMEGA_S[0]
+    # 取出卫星0覆盖的19个小区编号，并按编号升序以提升可读性
+    cells_sat0 = sorted(config.OMEGA_S[0])
     
     # 时隙数限制为最大50
     num_slots = min(50, len(p_history_sat0))
@@ -201,8 +201,8 @@ def plot_beam_selection_heatmap(f_history_sat0, config):
     选择的小区涂为红色，未选择的为白色。
     '''
     import matplotlib.colors as mcolors
-    # 取出卫星0覆盖的19个小区编号
-    cells_sat0 = config.OMEGA_S[0]
+    # 取出卫星0覆盖的19个小区编号，并按编号升序以提升可读性
+    cells_sat0 = sorted(config.OMEGA_S[0])
     
     # 时隙数限制为最大50
     num_slots = min(50, len(f_history_sat0))
