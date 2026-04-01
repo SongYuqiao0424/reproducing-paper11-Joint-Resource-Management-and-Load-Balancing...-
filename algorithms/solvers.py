@@ -49,6 +49,9 @@ class OptimizationSolvers:
             for s in self.config.PHI_K[k]:
                 valid_mask[s, k] = 1.0
 
+        # Sat0打印索引使用当前拓扑覆盖关系，按小区编号升序显示
+        sat0_cells_sorted = sorted([k for k in self.config.OMEGA_S.get(0, []) if 0 <= k < self.K])
+
         W_band = self.config.BANDWIDTH_PER_SEGMENT
         noise = self.env.channel_model.noise_power * W_band
         # 缩放因子，R_sk(bps) * time_scale，把传输速率转化为吞吐的包数
@@ -167,9 +170,15 @@ class OptimizationSolvers:
                         x_val = X_var.value
                         x_sum = np.sum(x_val) if x_val is not None else -10
                         x_max = np.max(x_val) if x_val is not None else -10
-                        # print(f"        [Theta {theta} Psi {psi}] Current F_ref sum: {np.sum(F_ref):.2f}, Max Val: {np.max(F_ref):.2f} | X_var sum: {x_sum:.4f}, Max: {x_max:.4f}")
-                        # print(f"        [Theta {theta} Psi {psi}] Sat0 F_ref: {np.array2string(np.round(F_ref[0, :19],2), separator=',', max_line_width=200)}")
-                        # print(f"        [Theta {theta} Psi {psi}] Sat0 X_var: {np.array2string(np.round(x_val[0, :19],2), separator=',', max_line_width=200) if x_val is not None else 'None'}")
+                        print(f"        [Theta {theta} Psi {psi}] Current F_ref sum: {np.sum(F_ref):.2f}, Max Val: {np.max(F_ref):.2f} | X_var sum: {x_sum:.4f}, Max: {x_max:.4f}")
+                        if sat0_cells_sorted:
+                            sat0_f_vals = np.round(F_ref[0, sat0_cells_sorted], 2)
+                            sat0_x_vals = np.round(x_val[0, sat0_cells_sorted], 2) if x_val is not None else None
+                            # print(f"        [Theta {theta} Psi {psi}] Sat0 Cells(sorted): {sat0_cells_sorted}")
+                            print(f"        [Theta {theta} Psi {psi}] Sat0 F_ref: {np.array2string(sat0_f_vals, separator=',', max_line_width=200)}")
+                            print(f"        [Theta {theta} Psi {psi}] Sat0 X_var: {np.array2string(sat0_x_vals, separator=',', max_line_width=200) if sat0_x_vals is not None else 'None'}")
+                        # else:
+                        #     print(f"        [Theta {theta} Psi {psi}] Sat0 Cells(sorted): []")
                     else:
                         break
                 except Exception:
@@ -193,6 +202,7 @@ class OptimizationSolvers:
         P_best = P_prev.copy()
         sk_size = self.S * self.K
         P_best_flat = P_best.reshape(self.L, sk_size)
+        sat0_cells_sorted = sorted([k for k in self.config.OMEGA_S.get(0, []) if 0 <= k < self.K])
 
         # 约束13l：考虑固定B后的临时队列上限 Q_temp = max(0, Q + d)
         d_sk = np.zeros((self.S, self.K))
@@ -353,6 +363,18 @@ class OptimizationSolvers:
             if P_var.value is not None:
                 P_best_flat = np.clip(P_var.value, 0, None)
                 P_best = P_best_flat.reshape(self.L, self.S, self.K)
+                if X_var.value is not None:
+                    if sat0_cells_sorted:
+                        sat0_x_vals = np.round(X_var.value[0, sat0_cells_sorted], 2)
+                        sat0_x_pairs = ", ".join([
+                            f"C{cell_idx}:{x_val:.2f}" for cell_idx, x_val in zip(sat0_cells_sorted, sat0_x_vals)
+                        ])
+                        sat0_x_sum = float(np.sum(sat0_x_vals))
+                        # print(f"        [P-SCA][Xi {xi}] Sat0 Cells(sorted): {sat0_cells_sorted}")
+                        print(f"        [P-SCA][Xi {xi}] Sat0 X_var by cell: {sat0_x_pairs}")
+                        print(f"        [P-SCA][Xi {xi}] Sat0 X_var sum: {sat0_x_sum:.2f}")
+                    # else:
+                        # print(f"        [P-SCA][Xi {xi}] Sat0 Cells(sorted): []")
             else:
                 break
         

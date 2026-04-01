@@ -200,30 +200,30 @@ def main():
                 d_0k = sum(B_opt[r, 0, k] for r in config.PHI_K.get(k, []))
                 shared_lb_items.append(f"C{k}:{';'.join(sat_parts)};{d_0k:+.2f}")
 
-            print("    Sat0 Shared Load Balance ->")
-            if shared_lb_items:
-                term_width = shutil.get_terminal_size(fallback=(160, 24)).columns
-                half_width = max(40, term_width // 2)
-                i = 0
-                while i < len(shared_lb_items):
-                    left_item = shared_lb_items[i]
+            # print("    Sat0 Shared Load Balance ->")
+            # if shared_lb_items:
+            #     term_width = shutil.get_terminal_size(fallback=(160, 24)).columns
+            #     half_width = max(40, term_width // 2)
+            #     i = 0
+            #     while i < len(shared_lb_items):
+            #         left_item = shared_lb_items[i]
 
-                    # 若左侧内容超过半宽，则本行只打印一条
-                    if len(left_item) > half_width:
-                        print(left_item)
-                        i += 1
-                        continue
-                    # 尝试放置右侧内容；若右侧超过半宽则本行仅打印左侧
-                    if i + 1 < len(shared_lb_items):
-                        right_item = shared_lb_items[i + 1]
-                        if len(right_item) <= half_width:
-                            print(f"{left_item.ljust(half_width)}{right_item}")
-                            i += 2
-                            continue
-                    print(left_item)
-                    i += 1
-            else:
-                print("        No shared cells with other satellites")
+            #         # 若左侧内容超过半宽，则本行只打印一条
+            #         if len(left_item) > half_width:
+            #             print(left_item)
+            #             i += 1
+            #             continue
+            #         # 尝试放置右侧内容；若右侧超过半宽则本行仅打印左侧
+            #         if i + 1 < len(shared_lb_items):
+            #             right_item = shared_lb_items[i + 1]
+            #             if len(right_item) <= half_width:
+            #                 print(f"{left_item.ljust(half_width)}{right_item}")
+            #                 i += 2
+            #                 continue
+            #         print(left_item)
+            #         i += 1
+            # else:
+            #     print("        No shared cells with other satellites")
 
             print("")
 
