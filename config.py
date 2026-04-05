@@ -16,7 +16,7 @@ class Config:
     CELL_RADIUS = 39e3            # 小区半径 (39 km)
 
     # ---------------- 发射与接收硬件参数 ----------------
-    MAX_POWER_PER_SAT = 100.0     # 每颗卫星最大总允许功率上下限 Pmax (单位: Watts, 维持原设)
+    MAX_POWER_PER_SAT = 50.0     # 每颗卫星最大总允许功率上限 Pmax (单位: Watts, 维持原设)
     NOISE_PSD_DBW = -204          # 加性高斯白噪声谱密度 N0 (-204 dBW/Hz)
 
     # ---------------- 业务需求流模型 (排队与负载) ----------------
@@ -25,8 +25,8 @@ class Config:
     PACKET_SIZE = 5e3             # 单元数据包大小 M0 (5 Kbits)
     
     # 泊松分布包到达率范围
-    ARRIVAL_RATE_MIN = 80e6       
-    ARRIVAL_RATE_MAX = 250e6      
+    ARRIVAL_RATE_MIN = 20e6       
+    ARRIVAL_RATE_MAX = 40e6      
     DEMAND_DRIFT_STEPS = 50       
     MAX_QUEUE_STORAGE = 10000       
 
@@ -63,7 +63,7 @@ class Config:
     # SCA算法参数（存在问题）：V = 10000；L_0 = 1e3；E_0 = 6.25；SCA_XI_ROUNDS = 1； max_iters=50000, eps=1e-4
     # QP算法参数：V = 1000；L_0 = 1e3；E_0 = 6.25；
     V = 1000                       # 李雅普诺夫权衡控制参数 V (适当调整以平衡能效与队列长度)
-    L_0 = 1e3                     # 队列长度规范项 L_0
+    L_0 = 1e5                     # 队列长度规范项 L_0
     E_0 = 6.25                    # 能效缩放项 E_0 (6.25 J)
     
     MAX_BCD_LOOPS = 5             # BCD 主循环最大迭代次数

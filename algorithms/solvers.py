@@ -35,6 +35,7 @@ class OptimizationSolvers:
         rho = 1.5                                                    # 惩罚函数更新速率加快
         Theta_rounds = getattr(self.config, 'MPMM_THETA_ROUNDS', 5)
         Psi_rounds = getattr(self.config, 'MPMM_PSI_ROUNDS', 5)
+        f_ref_clip_min = getattr(self.config, 'MPMM_F_REF_CLIP_MIN', 0.2)
         
         # 预先计算此时隙负载均衡调整后的临时队列限制 Q_temp (考虑到此时B矩阵被固定，计算先验排队长度d_sk)
         d_sk = np.zeros((self.S, self.K))
@@ -42,6 +43,17 @@ class OptimizationSolvers:
             for k_idx in range(self.K):
                 d_sk[s_idx, k_idx] = sum([B_fixed[r, s_idx, k_idx] for r in self.config.PHI_K[k_idx]])
         Q_temp = np.maximum(0.0, Q_lengths + d_sk)
+
+        # 对队列权重做归一化，避免后期队列量级抬升导致目标项数值爆炸
+        q_norm_target = 1000.0
+        covered_slots = self.config.NUM_SATELLITES * getattr(self.config, 'NUM_CELLS_PER_SAT', 0)
+        if covered_slots > 0:
+            q_mean_raw = float(np.sum(Q_lengths) / covered_slots)
+        else:
+            q_mean_raw = 0.0
+        q_norm_scale = q_norm_target / max(q_mean_raw, 1e-6)
+        Q_lengths_norm = Q_lengths * q_norm_scale
+        Q_temp_norm = Q_temp * q_norm_scale
         
         # 覆盖范围掩码 valid_mask，确保 F_var 只能在合法的卫星-小区对上取值
         valid_mask = np.zeros((self.S, self.K))
@@ -97,7 +109,7 @@ class OptimizationSolvers:
                 constraints = [F_var <= valid_mask]
                 for s in range(self.S):
                     # 约束13d
-                    constraints += [cp.sum(F_var[s, :]) <= self.config.NUM_BEAMS_PER_SAT]
+                    constraints += [cp.sum(F_var[s, :]) == self.config.NUM_BEAMS_PER_SAT]
                 for coeff in GSO_coeffs:
                     # 约束13g
                     constraints += [cp.sum(cp.multiply(coeff, F_var)) <= Z_w_limit]
@@ -108,7 +120,7 @@ class OptimizationSolvers:
                 # 引入真实传输变量 X_var (体现原论文式31中的辅助变量转换，以及式32a中对每个链路的约束)
                 X_var = cp.Variable((self.S, self.K))
                 # 约束 13l
-                constraints += [X_var <= Q_temp]
+                constraints += [X_var <= Q_temp_norm]
 
                 # 式1的I_skl计算
                 I_fixed = np.zeros((self.S, self.K, self.L))
@@ -134,7 +146,9 @@ class OptimizationSolvers:
                 Term1_sum = np.sum(W_band * term1, axis=2)
                 Noise_sum = np.sum(W_band * term2_coeff * noise, axis=2)
                 if theta == 0 and psi == 0:
+                    q_mean_norm = float(np.sum(Q_lengths_norm) / covered_slots) if covered_slots > 0 else 0.0
                     print(f"        [Debug] Term1_sum max: {np.max(Term1_sum):.2e}, Noise_sum max: {np.max(Noise_sum):.2e}")
+                    print(f"        [Debug] Q_mean(raw): {q_mean_raw:.2f}, Q_scale: {q_norm_scale:.4f}, Q_mean(norm): {q_mean_norm:.2f}")
 
                 for s in range(self.S):
                     for k in range(self.K):
@@ -152,7 +166,7 @@ class OptimizationSolvers:
                         constraints += [X_var[s, k] <= rate_sk_bound]
 
                 # utility_surrogate 表示论文最小化目标式19中q_sk*x_sk这一项，仅表示这一项是因为固定P、B时其他项为定值，最小化目标中仅剩余此项需要优化
-                utility_surrogate = cp.sum(cp.multiply(Q_lengths, X_var))
+                utility_surrogate = cp.sum(cp.multiply(Q_lengths_norm, X_var))
 
                 # J_mp 即对应式(29)完整展开项，内部已包含 alpha 和 beta 相关惩罚
                 # 修改主优化目标函数utility_surrogate的均衡系数，让目标函数处于合理的数值范围，这是导致 solver 不精确的根本原因
@@ -164,23 +178,37 @@ class OptimizationSolvers:
                     # 迭代次数影响求解的精度，迭代次数较多时，精度较高，但仿真时间会过长;
                     # 迭代次数较少时,可能未到达最优解,比如此时每个卫星的波束激活量sum(F_best[s,:])不小于等于NUM_BEAMS_PER_SAT(不满足约束13d)
                     # 也有可能单个波束选择值F_best[s,k]未迭代至0/1;但是只要求解到可行解附近时即可判断出应该激活的卫星波束.
-                    prob.solve(solver=cp.SCS, warm_start=True, max_iters=10000, eps=1e-4)
-                    if F_var.value is not None:
-                        F_ref = F_var.value
+                    # prob.solve(solver=cp.SCS, warm_start=True, max_iters=10000, eps=1e-4)
+                    prob.solve(solver=cp.SCS, warm_start=False, max_iters=10000, eps=1e-4)
+                    status = prob.status
+                    reliable_status = status in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE)
+                    if reliable_status and F_var.value is not None:
+                        # 数值稳态处理：抑制很小的分数值，避免其在后续迭代中持续扩散
+                        # F_ref = np.clip(F_var.value, 0.0, 1.0)
+                        # if f_ref_clip_min > 0:
+                        #     F_ref[F_ref < f_ref_clip_min] = 0.0
+                        # F_ref = F_ref * valid_mask
+                        if F_var.value is not None:
+                            F_ref = F_var.value
                         x_val = X_var.value
                         x_sum = np.sum(x_val) if x_val is not None else -10
                         x_max = np.max(x_val) if x_val is not None else -10
                         print(f"        [Theta {theta} Psi {psi}] Current F_ref sum: {np.sum(F_ref):.2f}, Max Val: {np.max(F_ref):.2f} | X_var sum: {x_sum:.4f}, Max: {x_max:.4f}")
+                        sat0_f_sum = np.sum(F_ref[0, sat0_cells_sorted]) if sat0_cells_sorted else 0.0
+                        sat0_x_sum = np.sum(x_val[0, sat0_cells_sorted]) if (x_val is not None and sat0_cells_sorted) else -10.0
+                        print(f"        [Theta {theta} Psi {psi}] Sat0 Summary: F_sum={sat0_f_sum:.2f}, X_sum={sat0_x_sum:.2f}")
                         if sat0_cells_sorted:
                             sat0_f_vals = np.round(F_ref[0, sat0_cells_sorted], 2)
                             sat0_x_vals = np.round(x_val[0, sat0_cells_sorted], 2) if x_val is not None else None
                             # print(f"        [Theta {theta} Psi {psi}] Sat0 Cells(sorted): {sat0_cells_sorted}")
                             print(f"        [Theta {theta} Psi {psi}] Sat0 F_ref: {np.array2string(sat0_f_vals, separator=',', max_line_width=200)}")
                             print(f"        [Theta {theta} Psi {psi}] Sat0 X_var: {np.array2string(sat0_x_vals, separator=',', max_line_width=200) if sat0_x_vals is not None else 'None'}")
+                            print("")
                         # else:
                         #     print(f"        [Theta {theta} Psi {psi}] Sat0 Cells(sorted): []")
                     else:
-                        break
+                        print(f"        [Theta {theta} Psi {psi}] Skip unreliable solver status: {status}; keep previous F_ref")
+                        continue
                 except Exception:
                     break
 
@@ -411,10 +439,31 @@ class OptimizationSolvers:
                 if (r in phi_k_set) and (s in phi_k_set):
                     valid_pair_mask[pair_idx, k] = 1.0
 
-        # 约束13k（与env中step的R_pkts保持一致，后续修改）：R_pkts = 100 * P
-        # 计算波束在所有频段上的总接收功率
-        power_sk = np.sum(P_fixed, axis=0)
-        R_pkts_cap = 100.0 * power_sk
+        # 约束13k中的传输包速率上限，按式(2)计算 R_{s,k}，再按式(7)换算为包数上限
+        W_band = self.config.BANDWIDTH_PER_SEGMENT
+        noise = self.env.channel_model.noise_power * W_band
+        time_scale = self.config.TIME_SLOT_DURATION / self.config.PACKET_SIZE
+        R_pkts_cap = np.zeros((self.S, self.K))
+        for s in range(self.S):
+            for k in range(self.K):
+                if F_fixed[s, k] <= 0:
+                    continue
+
+                rate_sk_bps = 0.0
+                for l in range(self.L):
+                    signal = (abs(h_matrix[s, k, k]) ** 2) * P_fixed[l, s, k] * F_fixed[s, k]
+
+                    interference = 0.0
+                    for s_idx in self.config.PHI_K[k]:
+                        for j in range(self.K):
+                            if s_idx == s and j == k:
+                                continue
+                            interference += (abs(h_matrix[s_idx, k, j]) ** 2) * P_fixed[l, s_idx, j] * F_fixed[s_idx, j]
+
+                    sinr = signal / (noise + interference + 1e-12)
+                    rate_sk_bps += W_band * np.log2(1.0 + sinr)
+
+                R_pkts_cap[s, k] = rate_sk_bps * time_scale
 
         constraints = []
         # 约束13i：非法卫星对在对应小区上的传输量强制为0

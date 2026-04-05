@@ -73,7 +73,7 @@ class SatelliteNetworkEnv:
                     
         return a_sk_n
 
-    def step(self, F_pattern, P_matrix, B_tensor):
+    def step(self, F_pattern, P_matrix, B_tensor, h_matrix=None):
         """
         按照正确的时隙序列完成调度更新：
         1. 记录此时隙的初始队列
@@ -102,20 +102,53 @@ class SatelliteNetworkEnv:
         temp_balanced_q = initial_q + d_sk_n
         temp_balanced_q = np.maximum(0.0, temp_balanced_q)
         
-        # 2. 计算本时隙有效发包数目 x_{s,k} 
+        # 2. 按SINR计算本时隙有效发包数目x_{s,k}速率上限R_{s,k}
+        # 若外部未传入本时隙信道，则回退到当前几何信道生成
+        # if h_matrix is None:
+        #     h_matrix, _ = self.channel_model.generate_random_channel_matrices()
+
+        noise = self.channel_model.noise_power * self.config.BANDWIDTH_PER_SEGMENT
+        time_scale = self.config.TIME_SLOT_DURATION / self.config.PACKET_SIZE
+        W_band = self.config.BANDWIDTH_PER_SEGMENT
+
         x_sk_n = np.zeros((S, K))
-        R_pkts = np.zeros((S, K))
-        for s_idx in range(S):
-            for k_idx in range(K):
-                if F_pattern[s_idx, k_idx] > 0:
-                    total_power_sk = np.sum(P_matrix[:, s_idx, k_idx])
-                    R_pkts[s_idx, k_idx] = total_power_sk * 100
-        R_pkts = R_pkts * F_pattern
+
+        # # P*100计算每个链路的速率上限
+        # R_pkts_cap = np.zeros((S, K))
+        # for s_idx in range(S):
+        #     for k_idx in range(K):
+        #         if F_pattern[s_idx, k_idx] > 0:
+        #             total_power_sk = np.sum(P_matrix[:, s_idx, k_idx])
+        #             R_pkts_cap[s_idx, k_idx] = total_power_sk * 100
+        # R_pkts_cap = R_pkts_cap * F_pattern
+
+        # 实际SINR计算每个链路的速率上限
+        R_pkts_cap = np.zeros((S, K))
+        for s in range(S):
+            for k in range(K):
+                if F_pattern[s, k] <= 0:
+                    continue
+
+                rate_sk_bps = 0.0
+                for l in range(self.config.NUM_FREQUENCY_SEGMENTS):
+                    signal = (abs(h_matrix[s, k, k]) ** 2) * P_matrix[l, s, k] * F_pattern[s, k]
+
+                    interference = 0.0
+                    for s_idx in self.config.PHI_K[k]:
+                        for j in range(K):
+                            if s_idx == s and j == k:
+                                continue
+                            interference += (abs(h_matrix[s_idx, k, j]) ** 2) * P_matrix[l, s_idx, j] * F_pattern[s_idx, j]
+
+                    sinr = signal / (noise + interference + 1e-12)
+                    rate_sk_bps += W_band * np.log2(1.0 + sinr)
+
+                R_pkts_cap[s, k] = rate_sk_bps * time_scale
         
         for s in range(S):
             for k in range(K):
                 # 真实传输量严格遭受"均衡后队列可用数据包量"的约束
-                x_sk_n[s, k] = min(R_pkts[s, k], temp_balanced_q[s, k])
+                x_sk_n[s, k] = min(R_pkts_cap[s, k], temp_balanced_q[s, k])
                 x_sk_n[s, k] = max(0.0, x_sk_n[s, k])
         
         # 3. 计算此时隙的新到达数据包量 a_{s,k}
@@ -137,7 +170,12 @@ class SatelliteNetworkEnv:
                 self.queue_lengths[s, k] = new_q
         
         # 5. 综合指标收集
-        avg_q_len = np.mean(self.queue_lengths)
+        total_queue_pkts = float(np.sum(self.queue_lengths))
+        covered_slots = self.config.NUM_SATELLITES * getattr(self.config, 'NUM_CELLS_PER_SAT', 0)
+        if covered_slots > 0:
+            avg_q_len = total_queue_pkts / covered_slots
+        else:
+            avg_q_len = 0.0
         total_arrived = np.sum(a_sk_n)
         current_drop_rate = total_dropped / total_arrived if total_arrived > 0 else 0.0
         
@@ -166,5 +204,7 @@ class SatelliteNetworkEnv:
             'avg_power': avg_power,
             'energy_consumption': total_energy,
             'throughput': total_throughput,
-            'drop_rate': current_drop_rate
+            'drop_rate': current_drop_rate,
+            'R_pkts_cap': R_pkts_cap,
+            'x_sk_n': x_sk_n
         }

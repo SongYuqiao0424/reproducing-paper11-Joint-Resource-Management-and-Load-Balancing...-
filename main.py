@@ -113,15 +113,15 @@ def main():
         
         # (b) 进行联合求解策略计算：BCD 优化获取 F[n], P[n], B[n] 
         # 使用随机占位函数替代完整 BCD 求解
-        F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        # F_opt, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
 
         # 使用真实的 BCD 交替优化算法求解
         # F_opt, P_opt, B_opt = algo.step(h_matrix, g_matrix, env.queue_lengths)
 
         # 单独测试 MPMM 算法对 F 的优化效果
-        # F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
-        # _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt)
-        # algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
+        F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
+        _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt)
+        algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
         
         # 单独测试 MPMM 算法对 P 的优化效果
         # F_opt, _, _ = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
@@ -136,7 +136,7 @@ def main():
 
 
         # (c) 执行动作并在环境中步进，产生延时与能耗表现
-        step_metrics = env.step(F_opt, P_opt, B_opt)
+        step_metrics = env.step(F_opt, P_opt, B_opt, h_matrix=h_matrix)
 
         # 记录小区69上 Sat0/Sat1 队列长度与 Sat0->Sat1 负载均衡传输量，用于绘制负载均衡校验图
         target_cell = 69
@@ -176,6 +176,20 @@ def main():
             if not active_power_strs:
                 active_power_strs = ["All 0W"]
             print(f"    Sat0 Power Alloc -> [{', '.join(active_power_strs)}]")
+
+            
+            # 打印Sat0激活波束的速率容量与实际传输量（按小区编号升序）
+            sat0_active_cells = sorted([k for k in range(config.NUM_CELLS) if F_opt[0, k] > 0.5])
+            r_pkts_cap_mat = step_metrics.get('R_pkts_cap')
+            x_sk_n_mat = step_metrics.get('x_sk_n')
+            if sat0_active_cells and r_pkts_cap_mat is not None and x_sk_n_mat is not None:
+                sat0_r_parts = [f"C{k}:{r_pkts_cap_mat[0, k]:.2f}" for k in sat0_active_cells]
+                sat0_x_parts = [f"C{k}:{x_sk_n_mat[0, k]:.2f}" for k in sat0_active_cells]
+                print(f"    Sat0 R_pkts_cap -> [{', '.join(sat0_r_parts)}]")
+                print(f"    Sat0 x_sk_n    -> [{', '.join(sat0_x_parts)}]")
+            else:
+                print("    Sat0 R_pkts_cap -> []")
+                print("    Sat0 x_sk_n    -> []")
 
              # 打印卫星0覆盖小区上的队列长度，带上小区号
             q_strs = [f"C{k}:{env.queue_lengths[0, k]:.1f}" for k in sat0_cells]
