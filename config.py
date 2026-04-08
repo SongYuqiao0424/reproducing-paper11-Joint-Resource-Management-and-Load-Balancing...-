@@ -62,8 +62,13 @@ class Config:
     # MPMM算法参数：L_0 = 1e5 ；MPMM_THETA_ROUNDS = 10；MPMM_PSI_ROUNDS = 1； max_iters=10000, eps=1e-4 
     # SCA算法参数（存在问题）：V = 10000；L_0 = 1e3；E_0 = 6.25；SCA_XI_ROUNDS = 1； max_iters=50000, eps=1e-4
     # QP算法参数：V = 1000；L_0 = 1e3；E_0 = 6.25；
-    V = 1000                       # 李雅普诺夫权衡控制参数 V (适当调整以平衡能效与队列长度)
-    L_0 = 1e5                     # 队列长度规范项 L_0
+
+    # 更新实际传输量后，对算法进行测试
+    # MPMM算法参数：L_0 = 1e5 ；MPMM_THETA_ROUNDS = 10；MPMM_PSI_ROUNDS = 1； max_iters=10000, eps=1e-4 
+    # SCA算法参数：V = 1000；L_0 = 1e3；E_0 = 6.25；SCA_XI_ROUNDS = 1； max_iters=50000, eps=1e-4
+    # QP算法参数：V = 1000；L_0 = 1e3；E_0 = 6.25；
+    V = 1000                         # 李雅普诺夫权衡控制参数 V (适当调整以平衡能效与队列长度)
+    L_0 = 1e3                     # 队列长度规范项 L_0
     E_0 = 6.25                    # 能效缩放项 E_0 (6.25 J)
     
     MAX_BCD_LOOPS = 5             # BCD 主循环最大迭代次数

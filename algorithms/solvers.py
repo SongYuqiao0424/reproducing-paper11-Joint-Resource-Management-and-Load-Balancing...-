@@ -239,6 +239,18 @@ class OptimizationSolvers:
                 d_sk[s_idx, k_idx] = sum([B_fixed[r, s_idx, k_idx] for r in self.config.PHI_K[k_idx]])
         Q_temp = np.maximum(0.0, Q_lengths + d_sk)
 
+        # 与MPMM一致：对队列权重做归一化，并同步缩放Q_temp约束
+        # q_norm_target = 1000.0
+        # covered_slots = self.config.NUM_SATELLITES * getattr(self.config, 'NUM_CELLS_PER_SAT', 0)
+        # if covered_slots > 0:
+        #     q_mean_raw = float(np.sum(Q_lengths) / covered_slots)
+        # else:
+        #     q_mean_raw = 0.0
+        # q_norm_scale = q_norm_target / max(q_mean_raw, 1e-6)
+        q_norm_scale = 3
+        Q_lengths_norm = Q_lengths * q_norm_scale
+        Q_temp_norm = Q_temp * q_norm_scale
+
         noise = self.env.channel_model.noise_power * self.config.BANDWIDTH_PER_SEGMENT
         log2_e = np.log2(np.e)
         time_scale = self.config.TIME_SLOT_DURATION / self.config.PACKET_SIZE
@@ -310,7 +322,7 @@ class OptimizationSolvers:
                 constraints += [cp.sum(cp.multiply(P_var[overlap_bands, :], coeff_vec[None, :])) <= Z_w_limit]
 
             # 约束13l
-            constraints += [X_var <= Q_temp]
+            constraints += [X_var <= Q_temp_norm]
 
             # 预构建 I_base(k,l) = sum(base_coeff_by_k[k] * P_var[l,:])，I_base(k,l) 表示频段l上，小区k受到的总信号功率，包括有用信号和干扰信号，后续在计算I_var时再剔除有用信号部分
             I_var_base = []
@@ -360,7 +372,7 @@ class OptimizationSolvers:
                     constraints += [X_var[s, k] <= surrogate_R_sk * time_scale]
 
             # 漂移项使用辅助变量 x_{s,k}
-            rate_expr = cp.sum(cp.multiply(Q_lengths, X_var))
+            rate_expr = cp.sum(cp.multiply(Q_lengths_norm, X_var))
             energy_expr = cp.sum(P_var) * self.config.TIME_SLOT_DURATION
 
             # rate_expr 表示论文最小化目标式19第一项中q_sk*x_sk这一项，仅表示这一项是因为固定F、B时其他项为定值，最小化目标中仅剩余此项需要优化

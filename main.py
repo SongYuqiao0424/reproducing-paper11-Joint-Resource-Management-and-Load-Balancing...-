@@ -119,15 +119,15 @@ def main():
         # F_opt, P_opt, B_opt = algo.step(h_matrix, g_matrix, env.queue_lengths)
 
         # 单独测试 MPMM 算法对 F 的优化效果
-        F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
-        _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt)
-        algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
+        # F_opt = algo.solvers.solve_F_MPMM(algo.F_prev, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
+        # _, P_opt, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt)
+        # algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
         
         # 单独测试 MPMM 算法对 P 的优化效果
-        # F_opt, _, _ = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
-        # P_opt = algo.solvers.solve_P_SCA(F_opt, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
-        # _, _, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt, P_in=P_opt)
-        # algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
+        F_opt, _, _ = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
+        P_opt = algo.solvers.solve_P_SCA(F_opt, algo.P_prev, algo.B_prev, h_matrix, g_matrix, env.queue_lengths)
+        _, _, B_opt = bcd_optimization_placeholder(env, config, h_matrix, g_matrix, F_in=F_opt, P_in=P_opt)
+        algo.F_prev, algo.P_prev, algo.B_prev = F_opt, P_opt, B_opt
 
         # 单独测试 MPMM 算法对 B 的优化效果
         # F_opt, P_opt, _ = bcd_optimization_placeholder(env, config, h_matrix, g_matrix)
