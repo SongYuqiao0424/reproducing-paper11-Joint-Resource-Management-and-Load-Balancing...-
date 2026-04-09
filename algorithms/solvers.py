@@ -44,8 +44,8 @@ class OptimizationSolvers:
                 d_sk[s_idx, k_idx] = sum([B_fixed[r, s_idx, k_idx] for r in self.config.PHI_K[k_idx]])
         Q_temp = np.maximum(0.0, Q_lengths + d_sk)
 
-        # 对队列权重做归一化，避免后期队列量级抬升导致目标项数值爆炸
-        q_norm_target = 1000.0
+        # 对队列权重做归一化，避免后期队列长度变化影响其在优化目标中权重
+        q_norm_target = 500.0
         covered_slots = self.config.NUM_SATELLITES * getattr(self.config, 'NUM_CELLS_PER_SAT', 0)
         if covered_slots > 0:
             q_mean_raw = float(np.sum(Q_lengths) / covered_slots)
@@ -171,7 +171,7 @@ class OptimizationSolvers:
                 # J_mp 即对应式(29)完整展开项，内部已包含 alpha 和 beta 相关惩罚
                 # 修改主优化目标函数utility_surrogate的均衡系数，让目标函数处于合理的数值范围，这是导致 solver 不精确的根本原因
                 # objective = cp.Minimize(-utility_surrogate / np.max([1.0, np.max(Q_lengths)]) + J_mp)
-                objective = cp.Minimize(-utility_surrogate / self.config.L_0 + J_mp)
+                objective = cp.Minimize(-utility_surrogate / self.config.L_0_MPMM + J_mp)
 
                 prob = cp.Problem(objective, constraints)
                 try:

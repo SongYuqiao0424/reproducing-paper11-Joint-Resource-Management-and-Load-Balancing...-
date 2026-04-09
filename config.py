@@ -68,10 +68,11 @@ class Config:
     # SCA算法参数：V = 1000；L_0 = 1e3；E_0 = 6.25；SCA_XI_ROUNDS = 1； max_iters=50000, eps=1e-4
     # QP算法参数：V = 1000；L_0 = 1e3；E_0 = 6.25；
     V = 1000                         # 李雅普诺夫权衡控制参数 V (适当调整以平衡能效与队列长度)
+    L_0_MPMM = 1e5
     L_0 = 1e3                     # 队列长度规范项 L_0
     E_0 = 6.25                    # 能效缩放项 E_0 (6.25 J)
     
-    MAX_BCD_LOOPS = 5             # BCD 主循环最大迭代次数
+    MAX_BCD_LOOPS = 1             # BCD 主循环最大迭代次数
     MPMM_THETA_ROUNDS = 10        # MPMM 外循环迭代次数
     MPMM_PSI_ROUNDS = 1           # MPMM 内循环迭代次数
     SCA_XI_ROUNDS = 1             # SCA 迭代次数

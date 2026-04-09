@@ -26,7 +26,7 @@ class ProposedAlgorithm:
         返回: (F_opt, P_opt, B_opt) 对应当前时隙的最优策略
         '''
         # 使用基于论文的 BCD 交替下降循环
-        max_loops = getattr(self.config, 'MAX_BCD_LOOPS', 5)
+        max_loops = getattr(self.config, 'MAX_BCD_LOOPS', 1)
         
         F_current = self.F_prev.copy()
         P_current = self.P_prev.copy()
